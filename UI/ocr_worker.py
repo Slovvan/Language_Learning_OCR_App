@@ -1,33 +1,61 @@
-"""Worker que corre el OCR en un hilo aparte para no congelar la interfaz."""
 from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
 
-from OCR.ocr_engine import OcrEngine, OcrResult
+from OCR.ocr_engine import OcrEngine
+from Translator.translator import Translator
 
 
 class OcrWorker(QObject):
     ready = pyqtSignal()
-    result = pyqtSignal(object)   # OcrResult
+    status = pyqtSignal(str)
+    result = pyqtSignal(object)     # OcrResult (texto original)
+    translated = pyqtSignal(str)    # texto traducido
+    done = pyqtSignal()             # terminó una captura (con o sin error)
     failed = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
         self._engine = None
+        self._translator = None
+        self._translator_error = ""
 
     @pyqtSlot()
     def load(self):
-        """Se ejecuta al iniciar el hilo: carga el modelo una sola vez."""
+        """Se ejecuta al iniciar el hilo: carga OCR y traductor una sola vez."""
         try:
+            self.status.emit("Cargando OCR...")
             self._engine = OcrEngine()
-            self.ready.emit()
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(f"No se pudo cargar el OCR: {exc}")
+            return
 
-    @pyqtSlot(object)
-    def process(self, image):
+        try:
+            self.status.emit("Cargando traductor (la primera vez descarga ~150 MB)...")
+            translator = Translator()
+            translator.load()
+            self._translator = translator
+        except Exception as exc:  # noqa: BLE001
+            self._translator_error = str(exc)
+
+        # El OCR funciona aunque el traductor falle; avisamos después de "ready".
+        self.ready.emit()
+        if self._translator is None:
+            self.failed.emit(f"Traductor no disponible: {self._translator_error}")
+
+    @pyqtSlot(object, bool)
+    def process(self, image, merge_lines):
         if self._engine is None:
             self.failed.emit("El OCR todavía no está listo.")
+            self.done.emit()
             return
         try:
-            self.result.emit(self._engine.read(image))
+            res = self._engine.read(image)
+            self.result.emit(res)
+            if res.text.strip():
+                if self._translator is None:
+                    self.failed.emit(f"Traductor no disponible: {self._translator_error}")
+                else:
+                    self.translated.emit(self._translator.translate(res.text, merge_lines))
         except Exception as exc:  # noqa: BLE001
-            self.failed.emit(f"Error en el OCR: {exc}")
+            self.failed.emit(f"Error: {exc}")
+        finally:
+            self.done.emit()

@@ -5,3 +5,6 @@ opencv-python-headless
 rapidocr
 onnxruntime
 pynput
+ctranslate2
+sentencepiece
+huggingface_hub

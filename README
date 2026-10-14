@@ -1,1 +1,2 @@
-Etapa 1: captura de región + OCR (RapidOCR) + ventana PyQt5.
+"Etapa 1:" "captura de región + OCR (RapidOCR) + ventana PyQt5."
+"Etapa 2" "traducción EN a ES y ventana PyQt5. (ejecutar translator antes para descargar el modelo)"
