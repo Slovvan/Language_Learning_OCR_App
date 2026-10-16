@@ -1,3 +1,7 @@
+"""Fase 3: captura + OCR + traducción EN -> ES + significado al pasar el mouse sobre una palabra."""
+# IMPORTANTE (Windows): las librerías nativas se importan ANTES que PyQt5.
+# Importarlas por primera vez dentro de un hilo con Qt ya cargado provoca
+# "access violation".
 import onnxruntime  # noqa: F401
 import ctranslate2  # noqa: F401
 
@@ -9,6 +13,8 @@ from PyQt5.QtWidgets import (QApplication, QCheckBox, QHBoxLayout, QLabel,
                              QPushButton, QTextEdit, QVBoxLayout, QWidget)
 
 from UI.capture import RegionSelector, bgr_to_qpixmap, grab_screen
+from DB.dictionary import Dictionary
+from UI.word_popup import HoverTextEdit, WordPopup
 from UI.ocr_worker import OcrWorker
 
 HOTKEY = "<ctrl>+<alt>+o"
@@ -38,13 +44,17 @@ class MainWindow(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("OCR para juegos - Fase 2 (EN → ES)")
-        self.resize(560, 640)
+        self.setWindowTitle("OCR para juegos - Fase 3 (EN → ES + diccionario)")
+        self.resize(560, 680)
         self.selector = None
         self._ocr_info = ""
 
+        # --- diccionario local y ventanita emergente ---
+        self.dictionary = Dictionary()
+        self.popup = WordPopup()
+
         # --- UI ---
-        self.btn_capture = QPushButton(f"Capturar región ({HOTKEY})")
+        self.btn_capture = QPushButton(f"Capturar región (ctrl+alt+O)")
         self.btn_capture.setEnabled(False)
         self.btn_copy_src = QPushButton("Copiar original")
         self.btn_copy_dst = QPushButton("Copiar traducción")
@@ -56,11 +66,16 @@ class MainWindow(QWidget):
         )
         self.status = QLabel("Iniciando...")
         self.status.setWordWrap(True)
+        self.dict_note = QLabel(
+            "⚠ Diccionario no encontrado: ejecuta build_dictionary.py para ver "
+            "significados al pasar el mouse sobre una palabra.")
+        self.dict_note.setWordWrap(True)
+        self.dict_note.setVisible(not self.dictionary.available)
         self.preview = QLabel("(aquí aparece la región capturada)")
         self.preview.setAlignment(Qt.AlignCenter)
         self.preview.setMinimumHeight(110)
         self.preview.setStyleSheet("border: 1px dashed gray;")
-        self.output = QTextEdit()
+        self.output = HoverTextEdit()
         self.output.setPlaceholderText("Texto original (OCR)...")
         self.translation = QTextEdit()
         self.translation.setPlaceholderText("Traducción al español...")
@@ -73,8 +88,9 @@ class MainWindow(QWidget):
         layout.addLayout(buttons)
         layout.addWidget(self.chk_merge)
         layout.addWidget(self.status)
+        layout.addWidget(self.dict_note)
         layout.addWidget(self.preview)
-        layout.addWidget(QLabel("Original (inglés)"))
+        layout.addWidget(QLabel("Original (inglés) — pasa el mouse sobre una palabra"))
         layout.addWidget(self.output, 1)
         layout.addWidget(QLabel("Traducción (español)"))
         layout.addWidget(self.translation, 1)
@@ -97,15 +113,28 @@ class MainWindow(QWidget):
         self.btn_capture.clicked.connect(self.start_capture)
         self.btn_copy_src.clicked.connect(lambda: self.copy(self.output))
         self.btn_copy_dst.clicked.connect(lambda: self.copy(self.translation))
+        self.output.word_hovered.connect(self.on_word_hovered)
+        self.output.hover_ended.connect(self.popup.hide)
 
         # --- atajo global (opcional) ---
         self.hotkey = HotkeyBridge()
         self.hotkey.triggered.connect(self.start_capture)
 
+    # --- significado de la palabra bajo el mouse ---
+    def on_word_hovered(self, word, compound, global_pos):
+        if not self.dictionary.available:
+            return  # el aviso ya está visible en la ventana
+        result = self.dictionary.lookup(word, compound)
+        if result is None:
+            self.popup.show_message(f"«{word}»: sin entrada en el diccionario", global_pos)
+        else:
+            self.popup.show_result(result, global_pos)
+
     # --- flujo de captura ---
     def start_capture(self):
         if not self.btn_capture.isEnabled() or self.selector is not None:
             return
+        self.popup.hide()
         self.hide()  # que la propia ventana no salga en la captura
         QTimer.singleShot(200, self._grab_and_select)
 
@@ -167,7 +196,9 @@ class MainWindow(QWidget):
         QGuiApplication.clipboard().setText(box.toPlainText())
 
     def closeEvent(self, event):
+        self.popup.hide()
         self.hotkey.stop()
+        self.dictionary.close()
         self.thread.quit()
         self.thread.wait(3000)
         super().closeEvent(event)

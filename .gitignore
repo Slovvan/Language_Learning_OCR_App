@@ -1,2 +1,4 @@
 Translator/models/
 venv
+DB/data/
+__pycache__

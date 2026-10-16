@@ -1,2 +1,3 @@
 "Etapa 1:" "captura de región + OCR (RapidOCR) + ventana PyQt5."
 "Etapa 2" "traducción EN a ES y ventana PyQt5. (ejecutar translator antes para descargar el modelo)"
+"Etapa 3" "hover en palabras para obtener traduccion, significado, sinonimos, antonimos con db. ()"

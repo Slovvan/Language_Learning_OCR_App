@@ -1,6 +1,7 @@
 PyQt5>=5.15
 mss>=9.0
 numpy
+nltk
 opencv-python-headless
 rapidocr
 onnxruntime
