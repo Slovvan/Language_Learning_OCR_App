@@ -1,17 +1,20 @@
-"""Fase 3: cuadro de texto que detecta la palabra bajo el mouse y ventanita con el diccionario."""
+"""Cuadro de texto que detecta la palabra bajo el mouse (hover y clic) y ventanita con el diccionario."""
 import html
 import re
 
 from PyQt5.QtCore import QEvent, QPoint, QPointF, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QTextDocument
+from PyQt5.QtGui import QColor, QTextCursor, QTextDocument
 from PyQt5.QtWidgets import QApplication, QFrame, QLabel, QTextEdit, QVBoxLayout
+
+from DB.dictionary import POS_LABEL
 
 _L = r"[^\W\d_]"   # una letra (Unicode)
 _WORD_RE = re.compile(rf"{_L}+(?:['’]{_L}+)*")           # palabra, con apóstrofos: don't
 _COMPOUND_RE = re.compile(rf"{_L}+(?:['’-]{_L}+)*")      # compuesto con guiones: well-known
 
-POS_LABEL = {"n": "sust.", "v": "verbo", "a": "adj.", "r": "adv."}
 MAX_DEFINITION = 120   # caracteres; las definiciones más largas se cortan con "…"
+MARK_COLOR = QColor(46, 160, 67, 80)    # fondo de las palabras ya guardadas
+SAVED_BADGE = "<p style='margin:0 0 4px 0; color:#1b6b2f'><b>✓ Ya guardada en tu lista</b></p>"
 
 
 def find_word(text: str, index: int):
@@ -32,10 +35,19 @@ def find_word(text: str, index: int):
     return None
 
 
-def render_html(result) -> str:
+def iter_words(text: str):
+    """Todas las palabras de `text`: (inicio, fin, palabra, compuesto), como find_word."""
+    compounds = [(c.start(), c.end(), c.group())
+                 for c in _COMPOUND_RE.finditer(text) if "-" in c.group()]
+    for m in _WORD_RE.finditer(text):
+        compound = next((g for a, b, g in compounds if a <= m.start() and m.end() <= b), "")
+        yield m.start(), m.end(), m.group(), compound
+
+
+def render_html(result, saved: bool = False) -> str:
     """HTML sencillo (subconjunto que entiende QLabel) para un LookupResult."""
     esc = html.escape
-    parts = []
+    parts = [SAVED_BADGE] if saved else []
     previous = None
     for entry in result.entries:
         if previous is not None and previous.kind == "function" and previous.lemma == entry.lemma:
@@ -78,6 +90,8 @@ class HoverTextEdit(QTextEdit):
 
     word_hovered = pyqtSignal(str, str, QPoint)
     hover_ended = pyqtSignal()
+    # Clic sobre una palabra (sin arrastrar): palabra, compuesto y su posición en el texto.
+    word_clicked = pyqtSignal(str, str, int)
 
     def __init__(self, delay_ms: int = 350, parent=None):
         super().__init__(parent)
@@ -90,6 +104,7 @@ class HoverTextEdit(QTextEdit):
         self._key = None        # (inicio, fin) absolutos de la palabra bajo el mouse
         self._pending = None    # (palabra, compuesto, posición global)
         self._shown = False     # ¿ya se emitió word_hovered para la palabra actual?
+        self._press = None      # dónde se pulsó el botón izquierdo (para distinguir clic de arrastre)
         self.verticalScrollBar().valueChanged.connect(lambda _v: self._end())
         self.textChanged.connect(self._end)
 
@@ -143,7 +158,33 @@ class HoverTextEdit(QTextEdit):
 
     def mousePressEvent(self, e):
         self._end()
+        self._press = e.pos() if e.button() == Qt.LeftButton else None
         super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        super().mouseReleaseEvent(e)
+        press, self._press = self._press, None
+        if press is None or e.button() != Qt.LeftButton:
+            return
+        if (e.pos() - press).manhattanLength() > 4 or self.textCursor().hasSelection():
+            return                       # fue un arrastre para seleccionar texto, no un clic
+        hit = self._word_at(e.pos())
+        if hit:
+            (start, _end), word, compound = hit
+            self.word_clicked.emit(word, compound, start)
+
+    def set_marks(self, ranges):
+        """Resalta los rangos (inicio, fin) del texto: las palabras ya guardadas."""
+        selections = []
+        for start, end in ranges:
+            cursor = QTextCursor(self.document())
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.KeepAnchor)
+            sel = QTextEdit.ExtraSelection()
+            sel.cursor = cursor
+            sel.format.setBackground(MARK_COLOR)
+            selections.append(sel)
+        self.setExtraSelections(selections)
 
 
 class WordPopup(QFrame):
@@ -169,11 +210,12 @@ class WordPopup(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._label)
 
-    def show_result(self, result, global_pos: QPoint):
-        self._show(render_html(result), global_pos)
+    def show_result(self, result, global_pos: QPoint, saved: bool = False):
+        self._show(render_html(result, saved), global_pos)
 
-    def show_message(self, text: str, global_pos: QPoint):
-        self._show(f"<span style='color:#666'>{html.escape(text)}</span>", global_pos)
+    def show_message(self, text: str, global_pos: QPoint, saved: bool = False):
+        badge = SAVED_BADGE if saved else ""
+        self._show(f"{badge}<span style='color:#666'>{html.escape(text)}</span>", global_pos)
 
     def _show(self, markup: str, global_pos: QPoint):
         self._label.setText(markup)

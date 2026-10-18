@@ -9,3 +9,5 @@ pynput
 ctranslate2
 sentencepiece
 huggingface_hub
+genanki
+anki_export

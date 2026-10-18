@@ -1,4 +1,9 @@
-"""Traducción local EN -> ES con CTranslate2 y Opus-MT
+"""Traducción local EN -> ES con CTranslate2 + Opus-MT (ligero, sin torch).
+
+Prueba rápida, fuera de la interfaz:
+    python translator.py
+La primera vez descarga el modelo (~150 MB) a la carpeta `models/` junto a
+este archivo; después carga desde disco, sin internet.
 """
 import re
 from pathlib import Path
@@ -6,14 +11,18 @@ from pathlib import Path
 import ctranslate2
 import sentencepiece as spm
 
+from Cards.sentences import END_PUNCT, SENT_END
+
 # Conversión a CTranslate2 de Helsinki-NLP/opus-mt-en-es (comunitaria, en Hugging Face).
 # Verificada: incluye model.bin, shared_vocabulary.txt, source.spm y target.spm.
 REPO_ID = "michaelfeil/ct2fast-opus-mt-en-es"
 MODEL_DIR = Path(__file__).resolve().parent / "models" / "ct2fast-opus-mt-en-es"
 
-# Si una línea termina así, se respeta el salto de línea; si no, se une con la siguiente.
-_END_PUNCT = (".", "!", "?", "…", ":", '"', "”", "»", ")", "]")
-_SENT_SPLIT = re.compile(r"(?<=[.!?…])\s+")
+# Reglas de corte compartidas con sentences.py (que decide a qué frase pertenece una palabra).
+# Si una línea termina en _END_PUNCT se respeta el salto de línea; si no, se une con la siguiente.
+_END_PUNCT = tuple(END_PUNCT)
+_SENT_SPLIT = re.compile(rf"(?<=[{re.escape(SENT_END)}])\s+")
+CACHE_SIZE = 500   # frases traducidas que se recuerdan (para las tarjetas)
 
 
 def join_wrapped_lines(text: str) -> str:
@@ -48,6 +57,7 @@ class Translator:
         self._ct2 = None
         self._sp_src = None
         self._sp_tgt = None
+        self._cache = {}       # frase (espacios normalizados) -> traducción
 
     @property
     def ready(self) -> bool:
@@ -105,11 +115,9 @@ class Translator:
         if not sentences:
             return ""
 
-        batch = [self._sp_src.encode(s, out_type=str) + ["</s>"] for s in sentences]
-        results = self._ct2.translate_batch(
-            batch, beam_size=self.beam_size, max_decoding_length=256
-        )
-        translated = [self._sp_tgt.decode(r.hypotheses[0]).strip() for r in results]
+        translated = self._translate_many(sentences)
+        for src, dst in zip(sentences, translated):
+            self._remember(src, dst)
 
         # Reconstruir las líneas originales
         out, i = [], 0
@@ -117,6 +125,34 @@ class Translator:
             out.append(" ".join(translated[i:i + n]))
             i += n
         return "\n".join(out)
+
+    def translate_sentence(self, text: str) -> str:
+        """Traduce una frase o palabra suelta (para las tarjetas).
+
+        Si esa frase ya se tradujo en la captura actual, devuelve la misma traducción
+        sin volver a ejecutar el modelo.
+        """
+        if not self.ready:
+            raise RuntimeError("El traductor no está cargado.")
+        key = " ".join(text.split())
+        if not key:
+            return ""
+        if key not in self._cache:
+            self._remember(key, self._translate_many([key])[0])
+        return self._cache[key]
+
+    def _translate_many(self, sentences: list) -> list:
+        batch = [self._sp_src.encode(s, out_type=str) + ["</s>"] for s in sentences]
+        results = self._ct2.translate_batch(
+            batch, beam_size=self.beam_size, max_decoding_length=256
+        )
+        return [self._sp_tgt.decode(r.hypotheses[0]).strip() for r in results]
+
+    def _remember(self, sentence: str, translation: str):
+        key = " ".join(sentence.split())
+        if key not in self._cache and len(self._cache) >= CACHE_SIZE:
+            self._cache.pop(next(iter(self._cache)))   # descarta la más antigua
+        self._cache[key] = translation
 
 
 if __name__ == "__main__":

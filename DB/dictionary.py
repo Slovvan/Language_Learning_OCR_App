@@ -33,6 +33,8 @@ _SUBST = {
     "r": [],
 }
 
+POS_LABEL = {"n": "sust.", "v": "verbo", "a": "adj.", "r": "adv."}
+
 _MODALS = frozenset("can could will would shall should may might must ought".split())
 _VERB_CLITICS = ("n't", "'ll", "'ve", "'re", "'d", "'m")   # contracciones de verbos
 
@@ -197,14 +199,40 @@ class Dictionary:
             return None
         return LookupResult(query=token, entries=entries)
 
-    def _content_entries(self, token: str, limits=None) -> list:
+    def key_for(self, word: str, compound: str = "") -> str:
+        """Clave con la que se guarda (y se reconoce como ya guardada) una palabra.
+
+        Es su lema principal: «swords» y «sword» comparten la clave «sword», y «ran» y «run»
+        la clave «run». Las palabras sin entrada en el diccionario usan la propia palabra,
+        en minúsculas.
+        """
+        for token in (compound, word):
+            if not token:
+                continue
+            t = _normalize(token)
+            if t in CONTRACTIONS:
+                return t
+            head, _note = FORMS.get(t, (t, ""))
+            if head in FUNCTION_WORDS:
+                return head
+            if self.available:
+                found = self._found_lemmas(token)
+                if found:
+                    return found[0][0].replace("_", " ")
+        return _normalize(word)
+
+    def _found_lemmas(self, token: str) -> list:
+        """[(lema, categorías)] candidatos de un token, el exacto primero (máximo MAX_LEMMAS)."""
         found, seen = [], set()
         for form, pos in _forms(token):
             for lemma in self.candidate_lemmas(form, pos):
                 if lemma not in seen:
                     seen.add(lemma)
                     found.append((lemma, pos))
-        found = found[:MAX_LEMMAS]
+        return found[:MAX_LEMMAS]
+
+    def _content_entries(self, token: str, limits=None) -> list:
+        found = self._found_lemmas(token)
         if limits is None:
             limits = (SENSES_SINGLE,) if len(found) == 1 else SENSES_MULTI
         return [self._entry(lemma, limits[min(i, len(limits) - 1)], pos)
