@@ -2,3 +2,6 @@ Translator/models/
 venv
 DB/data/
 __pycache__
+Test
+ocr_jp_out
+

@@ -193,7 +193,7 @@ class WordPopup(QFrame):
     WIDTH = 380
 
     def __init__(self):
-        super().__init__(None, Qt.ToolTip | Qt.FramelessWindowHint)
+        super().__init__(None, Qt.ToolTip | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setObjectName("wordPopup")
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WA_TransparentForMouseEvents)

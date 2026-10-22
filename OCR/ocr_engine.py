@@ -9,6 +9,9 @@ import numpy as np
 class OcrResult:
     text: str
     lines: list = field(default_factory=list)  # [(texto, confianza), ...]
+    # Una caja (x0, y0, x1, y1) por línea, en píxeles de la imagen que se le dio a read()
+    # (sin la ampliación interna). Sirve para poner el texto traducido encima del original.
+    boxes: list = field(default_factory=list)
 
 
 def preprocess(img: np.ndarray, scale: float = 2.0, binarize: bool = False) -> np.ndarray:
@@ -27,6 +30,13 @@ def preprocess(img: np.ndarray, scale: float = 2.0, binarize: bool = False) -> n
     return img
 
 
+def _bbox(points, scale: float) -> tuple:
+    """Caja envolvente (x0, y0, x1, y1) de los 4 puntos de una línea, en píxeles originales."""
+    pts = np.asarray(points, dtype=float).reshape(-1, 2) / scale
+    return (float(pts[:, 0].min()), float(pts[:, 1].min()),
+            float(pts[:, 0].max()), float(pts[:, 1].max()))
+
+
 class OcrEngine:
     """Carga el modelo una sola vez; reutilízalo para todas las capturas."""
 
@@ -38,21 +48,23 @@ class OcrEngine:
             from rapidocr_onnxruntime import RapidOCR
             self._new_api = False
         self._engine = RapidOCR()
-        self._engine(np.full((64, 256, 3), 255, dtype=np.uint8)) 
 
     def read(self, img: np.ndarray, scale: float = 2.0, binarize: bool = False) -> OcrResult:
         img = preprocess(img, scale, binarize)
-        lines = []
+        lines, boxes = [], []
 
         if self._new_api:
             out = self._engine(img)
             txts = out.txts or ()
             scores = out.scores or ()
+            found = out.boxes if out.boxes is not None else ()
             lines = list(zip(txts, scores))
+            boxes = [_bbox(b, scale) for b in found][:len(lines)]
         else:
             result, _ = self._engine(img)
-            for _box, txt, score in (result or []):
+            for box, txt, score in (result or []):
                 lines.append((txt, float(score)))
+                boxes.append(_bbox(box, scale))
 
         text = "\n".join(t for t, _ in lines)
-        return OcrResult(text=text, lines=lines)
+        return OcrResult(text=text, lines=lines, boxes=boxes)
