@@ -3,11 +3,15 @@
 Lo comparten la capa sobre la pantalla congelada, la ventana principal y el registro de frases,
 así las tres se comportan igual.
 """
-from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 
 from Cards.cards import build_card
-from Cards.sentences import sentence_at
+import Translator.languages as languages
 from UI.word_popup import iter_words
+
+
+HIDE_AFTER_WORD_MS = 650     # espera antes de ocultar la ventanita al dejar la palabra
+HIDE_AFTER_LEAVE_MS = 250    # ...y al salir el mouse de la propia ventanita
 
 
 class WordService(QObject):
@@ -20,6 +24,14 @@ class WordService(QObject):
         self.dictionary = dictionary
         self.store = store
         self.popup = popup
+        # El mouse puede ir de la palabra a la ventanita para desplazarla: al dejar la palabra,
+        # la ventanita espera un momento antes de ocultarse (y se queda si el mouse entra en ella).
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.timeout.connect(self._hide_if_idle)
+        if hasattr(popup, "entered"):
+            popup.entered.connect(self._hide_timer.stop)
+            popup.left.connect(lambda: self._hide_timer.start(HIDE_AFTER_LEAVE_MS))
 
     # --- palabras guardadas ---
     def is_saved(self, word: str, compound: str = "") -> bool:
@@ -42,7 +54,7 @@ class WordService(QObject):
         if self.store.has(key):
             self.message.emit(f"«{key}» ya estaba guardada.")
             return None
-        sentence = sentence_at(text, start, merge) or ""
+        sentence = languages.active().sentence_at(text, start, merge) or ""
         result = self.dictionary.lookup(word, compound)
         card = self.store.add(build_card(word, key, result, sentence))
         # Sin entrada en el diccionario (p. ej. «mana»): se pide también la traducción de la palabra.
@@ -67,15 +79,33 @@ class WordService(QObject):
 
     # --- ventanita del diccionario ---
     def hover(self, word: str, compound: str, global_pos):
+        self._hide_timer.stop()
         if not self.dictionary.available:
-            self.popup.show_message("Diccionario no encontrado: ejecuta build_dictionary.py", global_pos)
+            script = getattr(self.dictionary, "build_hint", "build_dictionary.py")
+            self.popup.show_message(f"Diccionario no encontrado: ejecuta {script}", global_pos)
             return
         saved = self.is_saved(word, compound)
-        result = self.dictionary.lookup(word, compound)
+        result = self.dictionary.lookup(word, compound, full=True)
         if result is None:
             self.popup.show_message(f"«{word}»: sin entrada en el diccionario", global_pos, saved)
         else:
             self.popup.show_result(result, global_pos, saved)
 
     def hide_popup(self):
+        """Oculta la ventanita ya."""
+        self._hide_timer.stop()
         self.popup.hide()
+
+    def hover_left(self):
+        """El mouse dejó la palabra: oculta la ventanita tras una breve espera, salvo que entre en ella."""
+        self._hide_timer.start(HIDE_AFTER_WORD_MS)
+
+    def _hide_if_idle(self):
+        if not self.popup.underMouse():
+            self.popup.hide()
+
+    def scroll_popup(self, delta: int):
+        """Rueda del mouse sobre el texto mientras la ventanita está visible."""
+        if self.popup.isVisible() and hasattr(self.popup, "scroll_by"):
+            self.popup.scroll_by(delta)
+            self._hide_timer.stop()

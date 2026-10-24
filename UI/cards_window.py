@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (QAbstractItemView, QFileDialog, QFormLayout, QHBoxL
                              QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton,
                              QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
-import anki_export
+from Cards import anki_export
 
 EXPORT_DIR = Path(__file__).resolve().parent / "exports"
 

@@ -100,10 +100,25 @@ def fit_font(text: str, rect: QRectF, base: QFont) -> QFont:
         size -= 1
 
 
+def uniform_font(items: list, base: QFont) -> QFont:
+    """Una sola fuente para todas las líneas [(texto, rect)]: la más pequeña que cabe en alguna,
+    pero nunca por debajo de 3/4 de la mediana de los tamaños individuales."""
+    sizes = sorted(fit_font(t, r, base).pixelSize() for t, r in items)
+    if not sizes:
+        return fit_font("", QRectF(0, 0, 100, 12), base)
+    median = sizes[len(sizes) // 2]
+    size = max(sizes[0], int(median * 0.75), 8)
+    font = QFont(base)
+    font.setStyleStrategy(QFont.PreferAntialias)
+    font.setPixelSize(size)
+    return font
+
+
 class CaptureOverlay(QWidget):
     region_selected = pyqtSignal(object)           # recorte (BGR) para el OCR
     word_hovered = pyqtSignal(str, str, QPoint)    # palabra, compuesto, posición global
     hover_ended = pyqtSignal()
+    wheel_moved = pyqtSignal(int)                  # rueda del mouse: desplaza la ventanita del diccionario
     word_clicked = pyqtSignal(str, str, int)       # palabra, compuesto, posición en `self.text`
     merge_toggled = pyqtSignal()                   # tecla M
     closed = pyqtSignal()                          # se cerró (Esc o cancelada la selección)
@@ -214,6 +229,7 @@ class CaptureOverlay(QWidget):
         sx, sy = self._scale
         ox, oy = self._region.left(), self._region.top()
         n = len(res.lines)
+        entries = []                                # (texto, rect, fondo, color de texto)
         for i, (text, _score) in enumerate(res.lines):
             if i < len(res.boxes):
                 bx0, by0, bx1, by1 = res.boxes[i]
@@ -224,12 +240,18 @@ class CaptureOverlay(QWidget):
                 rect = QRectF(self._region.left(), self._region.top() + i * row,
                               self._region.width(), row)
                 bg, fg = QColor(25, 25, 25), QColor(255, 255, 255)
-            font = fit_font(text, rect, base)
-            fm = QFontMetrics(font)
+            entries.append((text, rect, bg, fg))
+        # Un solo tamaño para todo el texto: el que cabe en la línea más ajustada (sin bajar de
+        # tres cuartos de la mediana, para que una línea rara no encoja todas las demás).
+        font = uniform_font([(t, r) for t, r, _b, _f in entries], base)
+        fm = QFontMetrics(font)
+        for text, rect, bg, fg in entries:
+            width = fm.horizontalAdvance(text)
+            wide = rect.adjusted(0, 0, max(0.0, width - rect.width()), 0)   # si se pasa, el parche la cubre
             words = [_Word(s, e, w, c, rect.left() + fm.horizontalAdvance(text[:s]),
                            rect.left() + fm.horizontalAdvance(text[:e]))
                      for s, e, w, c in iter_words(text)]
-            patch = rect.adjusted(-PAD_X, -PAD_Y, PAD_X, PAD_Y)
+            patch = wide.adjusted(-PAD_X, -PAD_Y, PAD_X, PAD_Y)
             self._lines.append(_Line(text, offset, rect, patch, bg, fg, font, words))
             texts.append(text)
             offset += len(text) + 1
@@ -280,17 +302,34 @@ class CaptureOverlay(QWidget):
         color = "#ffb4b4" if self._message else "#f4f4f4"
         doc.setHtml(f"<div style='color:{color}'>{html.escape(body).replace(chr(10), '<br>')}</div>")
         width = min(max(self._region.width(), 380.0), self.width() - 40.0)
-        doc.setTextWidth(width - 28)
-        height = doc.size().height() + 24
         x = min(max(self._region.left(), 20.0), self.width() - 20.0 - width)
-        below = self._region.bottom() + 8
-        if below + height <= self.height() - 12:
-            y = below
-        elif self._region.top() - 8 - height >= 12:
-            y = self._region.top() - 8 - height
+        gap, margin = 8.0, 12.0
+        space_below = self.height() - margin - (self._region.bottom() + gap)
+        space_above = (self._region.top() - gap) - margin
+        # Región en la mitad de abajo -> el panel va arriba (y al revés), para no tapar el texto
+        # ni quedar pegado al borde. Si no cabe en ese lado, se prueba el otro.
+        center = (self._region.top() + self._region.bottom()) / 2
+        order = ["above", "below"] if center > self.height() / 2 else ["below", "above"]
+        while True:
+            doc.setTextWidth(width - 28)
+            height = doc.size().height() + 24
+            fits = {"above": height <= space_above, "below": height <= space_below}
+            side = next((sd for sd in order if fits[sd]), None)
+            if side is not None or font.pixelSize() <= 12:
+                break
+            font.setPixelSize(font.pixelSize() - 1)            # ningún lado alcanza: letra más chica
+            doc.setDefaultFont(font)
+        if side is None:                                       # sigue sin caber: el lado con más espacio
+            side = "above" if space_above >= space_below else "below"
+        if side == "below":
+            y = min(self._region.bottom() + gap, self.height() - margin - height)
         else:
-            y = self.height() - 12 - height
+            y = max(self._region.top() - gap - height, margin)
         self._panel = (QRectF(x, y, width, height), doc)
+
+    def wheelEvent(self, e):
+        self.wheel_moved.emit(e.angleDelta().y())
+        e.accept()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)

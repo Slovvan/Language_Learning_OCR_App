@@ -22,6 +22,10 @@ MAX_LEMMAS = 3             # candidatos máximos por palabra (p. ej. "better" ->
 SENSES_SINGLE = 4          # significados mostrados cuando solo hay un candidato
 SENSES_MULTI = (2, 1, 1)   # significados por candidato, en orden, cuando hay varios
 SENSES_AFTER_GLOSSARY = 1  # significados de WordNet tras el glosario (will, can, may...)
+# Con full=True (ventanita del mouse, que se puede desplazar) se muestran muchos más significados.
+FULL_SINGLE = 30
+FULL_MULTI = (20, 8, 5)
+FULL_AFTER_GLOSSARY = 6
 
 # Reglas de lematización de WordNet (morphy), una sola pasada, igual que NLTK.
 _SUBST = {
@@ -56,6 +60,7 @@ class Entry:
     total: int                                 # significados totales en el diccionario
     kind: str = "word"                         # "word" (WordNet) o "function" (glosario)
     note: str = ""                             # p. ej. "pasado, con I / he / she / it"
+    reading: str = ""                          # lectura (japonés: «あける»); vacía en inglés
 
 
 @dataclass
@@ -178,23 +183,24 @@ class Dictionary:
         return out
 
     # --- API pública ---
-    def lookup(self, word: str, compound: str = ""):
+    def lookup(self, word: str, compound: str = "", full: bool = False):
         """Busca una palabra. `compound` es el compuesto con guiones que la contiene
-        ("well-known"): se prueba primero y, si no existe, se busca la palabra sola."""
+        ("well-known"): se prueba primero y, si no existe, se busca la palabra sola.
+        `full` pide muchos más significados (para la ventanita desplazable)."""
         if not self.available:
             return None
         for token in (compound, word):
             if token:
-                result = self._lookup_token(token)
+                result = self._lookup_token(token, full)
                 if result is not None:
                     return result
         return None
 
-    def _lookup_token(self, token: str):
+    def _lookup_token(self, token: str, full: bool = False):
         entries, also_content = _function_entries(_normalize(token))
         if not entries or also_content:
-            limits = (SENSES_AFTER_GLOSSARY,) if entries else None
-            entries = entries + self._content_entries(token, limits)
+            limits = ((FULL_AFTER_GLOSSARY if full else SENSES_AFTER_GLOSSARY),) if entries else None
+            entries = entries + self._content_entries(token, limits, full)
         if not entries:
             return None
         return LookupResult(query=token, entries=entries)
@@ -231,10 +237,11 @@ class Dictionary:
                     found.append((lemma, pos))
         return found[:MAX_LEMMAS]
 
-    def _content_entries(self, token: str, limits=None) -> list:
+    def _content_entries(self, token: str, limits=None, full: bool = False) -> list:
         found = self._found_lemmas(token)
         if limits is None:
-            limits = (SENSES_SINGLE,) if len(found) == 1 else SENSES_MULTI
+            single, multi = (FULL_SINGLE, FULL_MULTI) if full else (SENSES_SINGLE, SENSES_MULTI)
+            limits = (single,) if len(found) == 1 else multi
         return [self._entry(lemma, limits[min(i, len(limits) - 1)], pos)
                 for i, (lemma, pos) in enumerate(found)]
 

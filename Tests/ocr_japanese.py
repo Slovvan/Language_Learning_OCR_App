@@ -136,7 +136,7 @@ def show_modes(txts, scores, boxes, modes, say, img=None):
     furigana). `boxes`: cajas de 4 puntos ya en píxeles de la imagen original `img`."""
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from japanese import Mode, process
+        from Translator.japanese import Mode, process
         from ocr_engine import OcrResult
     except ImportError as exc:
         say(f"      (no se pudo cargar japanese.py: {exc})")

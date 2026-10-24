@@ -11,6 +11,7 @@ from pathlib import Path
 import ctranslate2
 import sentencepiece as spm
 
+from Translator.languages import get_pack
 from Cards.sentences import END_PUNCT, SENT_END
 
 # Conversión a CTranslate2 de Helsinki-NLP/opus-mt-en-es (comunitaria, en Hugging Face).
@@ -48,10 +49,11 @@ def join_wrapped_lines(text: str) -> str:
 class Translator:
     """Carga el modelo una sola vez; reutilízalo para todas las traducciones."""
 
-    def __init__(self, model_dir: Path = MODEL_DIR, repo_id: str = REPO_ID,
-                 cpu_threads: int = 2, beam_size: int = 4):
-        self.model_dir = Path(model_dir)
-        self.repo_id = repo_id
+    def __init__(self, model_dir: Path = None, repo_id: str = None,
+                 cpu_threads: int = 2, beam_size: int = 4, pack=None):
+        self.pack = pack or get_pack("en")      # idioma: modelo, división en frases y retoques
+        self.model_dir = Path(model_dir or self.pack.model_dir)
+        self.repo_id = repo_id or self.pack.model_repo
         self.cpu_threads = cpu_threads  # menos hilos = menos CPU mientras juegas
         self.beam_size = beam_size
         self._ct2 = None
@@ -91,7 +93,7 @@ class Translator:
         )
         self._sp_src = spm.SentencePieceProcessor(model_file=str(self.model_dir / "source.spm"))
         self._sp_tgt = spm.SentencePieceProcessor(model_file=str(self.model_dir / "target.spm"))
-        self.translate("Hello")  # calentamiento
+        self.translate(self.pack.warmup)  # calentamiento
 
     def _download(self):
         from huggingface_hub import snapshot_download  # import tardío: solo la 1ª vez
@@ -102,14 +104,14 @@ class Translator:
         if not self.ready:
             raise RuntimeError("El traductor no está cargado.")
         if merge_lines:
-            text = join_wrapped_lines(text)
+            text = self.pack.join_lines(text)
 
         # Cada frase se traduce por separado: mejor calidad y evita truncar textos largos.
         sentences, layout = [], []
         for line in (ln.strip() for ln in text.splitlines()):
             if not line:
                 continue
-            parts = [s for s in _SENT_SPLIT.split(line) if s]
+            parts = self.pack.split_line(line)
             layout.append(len(parts))
             sentences.extend(parts)
         if not sentences:
@@ -122,7 +124,7 @@ class Translator:
         # Reconstruir las líneas originales
         out, i = [], 0
         for n in layout:
-            out.append(" ".join(translated[i:i + n]))
+            out.append(self.pack.sentence_joiner.join(translated[i:i + n]))
             i += n
         return "\n".join(out)
 
@@ -146,7 +148,7 @@ class Translator:
         results = self._ct2.translate_batch(
             batch, beam_size=self.beam_size, max_decoding_length=256
         )
-        return [self._sp_tgt.decode(r.hypotheses[0]).strip() for r in results]
+        return [self.pack.postprocess(self._sp_tgt.decode(r.hypotheses[0]).strip()) for r in results]
 
     def _remember(self, sentence: str, translation: str):
         key = " ".join(sentence.split())

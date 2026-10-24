@@ -1,6 +1,8 @@
 """Worker que corre OCR + traducción en un hilo aparte para no congelar la interfaz."""
 from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
 
+import Translator.japanese as japanese
+import Translator.languages as languages
 from OCR.ocr_engine import OcrEngine
 from Translator.translator import Translator
 
@@ -19,6 +21,38 @@ class OcrWorker(QObject):
         self._engine = None
         self._translator = None
         self._translator_error = ""
+        self.language = "en"                  # idioma del juego (clave de languages.PACKS)
+        self.ocr_mode = japanese.Mode.NORMAL  # modo de OCR del japonés (normal / solo kana)
+
+    def _load_translator(self):
+        pack = languages.get_pack(self.language)
+        self._translator = None
+        self._translator_error = ""
+        try:
+            self.status.emit(f"Cargando traductor {pack.source_name} → {pack.target_name} "
+                             "(la primera vez descarga el modelo)...")
+            translator = Translator(pack=pack)
+            translator.load()
+            self._translator = translator
+        except Exception as exc:  # noqa: BLE001
+            self._translator_error = str(exc)
+
+    @pyqtSlot(str, str)
+    def configure(self, language, ocr_mode):
+        """Cambia el idioma del juego y el modo de OCR. Solo se recarga el traductor si cambia
+        el idioma (y se descarta el anterior para no gastar memoria)."""
+        try:
+            self.ocr_mode = japanese.Mode(ocr_mode)
+        except ValueError:
+            self.ocr_mode = japanese.Mode.NORMAL
+        if language != self.language or (self._translator is None and not self._translator_error):
+            self.language = language
+            if self._engine is not None:
+                self._load_translator()
+        if self._engine is not None:
+            self.ready.emit()
+            if self._translator is None:
+                self.failed.emit(f"Traductor no disponible: {self._translator_error}")
 
     @pyqtSlot()
     def load(self):
@@ -30,13 +64,7 @@ class OcrWorker(QObject):
             self.failed.emit(f"No se pudo cargar el OCR: {exc}")
             return
 
-        try:
-            self.status.emit("Cargando traductor (la primera vez descarga ~150 MB)...")
-            translator = Translator()
-            translator.load()
-            self._translator = translator
-        except Exception as exc:  # noqa: BLE001
-            self._translator_error = str(exc)
+        self._load_translator()
 
         # El OCR funciona aunque el traductor falle; avisamos después de "ready".
         self.ready.emit()
@@ -51,6 +79,8 @@ class OcrWorker(QObject):
             return
         try:
             res = self._engine.read(image)
+            if languages.get_pack(self.language).has_ocr_modes:   # japonés: filas, furigana, confusiones
+                res = japanese.process(res, self.ocr_mode)
             self.result.emit(res)
             if res.text.strip():
                 if self._translator is None:

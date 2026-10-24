@@ -12,21 +12,26 @@ import ctranslate2  # noqa: F401
 
 import sys
 
-from PyQt5.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal
+from PyQt5.QtCore import QObject, QSettings, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QGuiApplication, QIcon, QPainter, QPixmap
-from PyQt5.QtWidgets import (QApplication, QCheckBox, QHBoxLayout, QLabel,
+from PyQt5.QtWidgets import (QApplication, QCheckBox, QComboBox, QHBoxLayout, QLabel,
                              QPushButton, QTextEdit, QVBoxLayout, QWidget)
+
 
 from UI.capture import bgr_to_qpixmap, grab_screen
 from Cards.cards import CardStore
 from UI.cards_window import CardsWindow
 from DB.dictionary import Dictionary
+from DB.dictionary_ja import JaDictionary
+from DB.ja_nlp import tokenizer as ja_tokenizer
 from UI.log_view import LogWindow
 from UI.overlay import CaptureOverlay
 from DB.phrase_log import PhraseLog
 from UI.word_popup import HoverTextEdit, WordPopup
 from UI.word_service import WordService
 from UI.ocr_worker import OcrWorker
+import Translator.japanese as japanese
+import Translator.languages as languages
 
 HOTKEY = "<ctrl>+<alt>+o"
 HOTKEY_LABEL = "Ctrl+Alt+O"
@@ -73,6 +78,7 @@ class HotkeyBridge(QObject):
 class MainWindow(QWidget):
     process_requested = pyqtSignal(object, bool)   # imagen, unir_lineas
     card_requested = pyqtSignal(int, str, str)     # id de tarjeta, frase, palabra a traducir ("" = ninguna)
+    configure_requested = pyqtSignal(str, str)     # idioma del juego, modo de OCR
 
     def __init__(self):
         super().__init__()
@@ -88,12 +94,23 @@ class MainWindow(QWidget):
         self._log_id = None         # entrada del registro de la captura en curso
         self._grabbing = False
 
+        # --- idioma del juego y modo de OCR (se recuerdan entre sesiones) ---
+        self.settings = QSettings("OCRTranslator", "fase6")
+        lang = str(self.settings.value("language", "en"))
+        if lang not in languages.PACKS:
+            lang = "en"
+        mode = str(self.settings.value("ocr_mode", "normal"))
+        if mode not in ("normal", "kana"):
+            mode = "normal"
+        languages.set_active(lang)
+
         # --- diccionario local, tarjetas, registro y ventanita emergente ---
         self.dictionary = Dictionary()
+        self.dictionary_ja = JaDictionary()
         self.store = CardStore()
         self.log = PhraseLog()
         self.popup = WordPopup()
-        self.words = WordService(self.dictionary, self.store, self.popup, self)
+        self.words = WordService(self._dictionary_for(lang), self.store, self.popup, self)
         self.words.saved_changed.connect(self._cards_changed)
         self.words.message.connect(self._on_word_message)
         self.words.card_requested.connect(self.card_requested)
@@ -105,6 +122,15 @@ class MainWindow(QWidget):
         self.btn_log = QPushButton()
         self.btn_copy_src = QPushButton("Copiar original")
         self.btn_copy_dst = QPushButton("Copiar traducción")
+        self.combo_lang = QComboBox()
+        for code, pack in languages.PACKS.items():
+            self.combo_lang.addItem(pack.label, code)
+        self.combo_lang.setCurrentIndex(self.combo_lang.findData(lang))
+        self.combo_mode = QComboBox()
+        self.combo_mode.addItem("OCR normal (con kanji)", "normal")
+        self.combo_mode.addItem("OCR solo kana (todo hiragana/katakana)", "kana")
+        self.combo_mode.setCurrentIndex(self.combo_mode.findData(mode))
+        self.combo_mode.setToolTip("«Solo kana» corrige más confusiones en juegos sin kanji.")
         self.chk_merge = QCheckBox("Unir líneas partidas (diálogos)")
         self.chk_merge.setChecked(True)
         self.chk_merge.setToolTip(
@@ -142,6 +168,11 @@ class MainWindow(QWidget):
         buttons3.addWidget(self.btn_copy_src)
         buttons3.addWidget(self.btn_copy_dst)
         layout = QVBoxLayout(self)
+        langs = QHBoxLayout()
+        langs.addWidget(QLabel("Idioma del juego:"))
+        langs.addWidget(self.combo_lang, 1)
+        langs.addWidget(self.combo_mode, 1)
+        layout.addLayout(langs)
         layout.addLayout(buttons)
         layout.addLayout(buttons2)
         layout.addLayout(buttons3)
@@ -150,16 +181,21 @@ class MainWindow(QWidget):
         layout.addWidget(self.how_to)
         layout.addWidget(self.dict_note)
         layout.addWidget(self.preview)
-        layout.addWidget(QLabel("Original (inglés) — mouse sobre una palabra: significado · clic: guardarla"))
+        self.lbl_original = QLabel()
+        self.lbl_translation = QLabel()
+        layout.addWidget(self.lbl_original)
         layout.addWidget(self.output, 1)
-        layout.addWidget(QLabel("Traducción (español)"))
+        layout.addWidget(self.lbl_translation)
         layout.addWidget(self.translation, 1)
 
         # --- hilo del OCR + traductor (los modelos se cargan una vez, dentro del hilo) ---
         self.thread = QThread()
         self.worker = OcrWorker()
         self.worker.moveToThread(self.thread)
+        self.worker.language = lang
+        self.worker.ocr_mode = japanese.Mode(mode)
         self.thread.started.connect(self.worker.load)
+        self.configure_requested.connect(self.worker.configure)
         self.process_requested.connect(self.worker.process)
         self.card_requested.connect(self.worker.translate_for_card)
         self.worker.status.connect(self.status.setText)
@@ -172,13 +208,16 @@ class MainWindow(QWidget):
         self.thread.start()
 
         # --- señales de la UI ---
+        self.combo_lang.currentIndexChanged.connect(self.on_language_changed)
+        self.combo_mode.currentIndexChanged.connect(self.on_mode_changed)
         self.btn_capture.clicked.connect(self.start_capture)
         self.btn_cards.clicked.connect(self.open_cards)
         self.btn_log.clicked.connect(self.open_log)
         self.btn_copy_src.clicked.connect(lambda: self.copy(self.output))
         self.btn_copy_dst.clicked.connect(lambda: self.copy(self.translation))
         self.output.word_hovered.connect(self.words.hover)
-        self.output.hover_ended.connect(self.words.hide_popup)
+        self.output.hover_ended.connect(self.words.hover_left)
+        self.output.wheel_moved.connect(self.words.scroll_popup)
         self.output.word_clicked.connect(self.on_word_clicked)
         self.output.textChanged.connect(self.refresh_marks)
 
@@ -186,7 +225,52 @@ class MainWindow(QWidget):
         self.hotkey = HotkeyBridge()
         self.hotkey.triggered.connect(self.start_capture)
 
+        self._apply_language_ui()
         self._update_buttons()
+
+    # --- idioma ---
+    def _dictionary_for(self, code):
+        return self.dictionary_ja if code == "ja" else self.dictionary
+
+    def _apply_language_ui(self):
+        pack = languages.active()
+        self.words.dictionary = self._dictionary_for(pack.code)
+        self.lbl_original.setText(
+            f"Original ({pack.source_name}) — mouse sobre una palabra: significado · clic: guardarla")
+        self.lbl_translation.setText(f"Traducción ({pack.target_name})")
+        self.translation.setPlaceholderText(f"Traducción al {pack.target_name}...")
+        self.combo_mode.setVisible(pack.has_ocr_modes)
+        if pack.code == "en":
+            self.dict_note.setText("⚠ Diccionario no encontrado: ejecuta build_dictionary.py para ver "
+                                   "significados al pasar el mouse sobre una palabra.")
+            self.dict_note.setVisible(not self.dictionary.available)
+        else:
+            if not ja_tokenizer.available:
+                self.dict_note.setText("⚠ Falta SudachiPy: ejecuta «pip install sudachipy sudachidict_core» "
+                                       "para ver significados al pasar el mouse.")
+            else:
+                self.dict_note.setText("⚠ Diccionario japonés no encontrado: ejecuta build_dictionary_ja.py "
+                                       "para ver significados y lecturas al pasar el mouse.")
+            self.dict_note.setVisible(not (ja_tokenizer.available and self.dictionary_ja.available))
+
+    def on_language_changed(self):
+        code = self.combo_lang.currentData()
+        languages.set_active(code)
+        self.settings.setValue("language", code)
+        self._apply_language_ui()
+        self.words.hide_popup()
+        self.output.clear()
+        self.translation.clear()
+        self._last_image = None
+        self.btn_capture.setEnabled(False)
+        self.status.setText("Cambiando de idioma...")
+        self.refresh_marks()
+        self.configure_requested.emit(code, self.combo_mode.currentData())
+
+    def on_mode_changed(self):
+        mode = self.combo_mode.currentData()
+        self.settings.setValue("ocr_mode", mode)
+        self.configure_requested.emit(self.combo_lang.currentData(), mode)
 
     # --- palabras guardadas ---
     def refresh_marks(self):
@@ -273,7 +357,8 @@ class MainWindow(QWidget):
             self.overlay = CaptureOverlay()
             self.overlay.region_selected.connect(self.on_region)
             self.overlay.word_hovered.connect(self.words.hover)
-            self.overlay.hover_ended.connect(self.words.hide_popup)
+            self.overlay.hover_ended.connect(self.words.hover_left)
+            self.overlay.wheel_moved.connect(self.words.scroll_popup)
             self.overlay.word_clicked.connect(self.on_overlay_word_clicked)
             self.overlay.merge_toggled.connect(self.on_merge_toggled)
             self.overlay.closed.connect(self.on_overlay_closed)
@@ -368,6 +453,7 @@ class MainWindow(QWidget):
         self.thread.quit()
         self.thread.wait(3000)
         self.dictionary.close()
+        self.dictionary_ja.close()
         self.store.close()
         self.log.close()
         QApplication.quit()

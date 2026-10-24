@@ -2,7 +2,8 @@
 "Etapa 2" "traducción EN a ES y ventana PyQt5. (ejecutar translator antes para descargar el modelo)"
 "Etapa 3" "hover en palabras para obtener traduccion, significado, sinonimos, antonimos con db. (ejecutar build_dictionary antes)"
 "Etapa 4" "Click en palabras nuevas para exportar toda su informacíon a Anki"
-"Etapa 5" "OCR Inmersivo(Pausa el juego y duplica el texto sobre pantalla usnado el OCR)"
+"Etapa 5" "OCR Inmersivo(Pausa el juego y duplica el texto sobre pantalla usnado el OCR)" error de furigana
+"Etapa 6" "Implementación de Japones oon diccionario (ejecutar build_dictionary_ja antes)"
 
 Principal:
 EN - ES (hecho)
