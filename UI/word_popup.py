@@ -20,6 +20,7 @@ READING_PX = 20
 MEANING_PX = 17        # traducción al español (inglés) o significado (japonés)
 BODY_PX = 13           # definiciones en inglés, notas, ejemplos
 MARK_COLOR = QColor(46, 160, 67, 80)    # fondo de las palabras ya guardadas
+PENDING_COLOR = QColor(235, 140, 30, 90)   # fondo de las palabras sin significado (pendientes)
 SAVED_BADGE = "<p style='margin:0 0 4px 0; color:#1b6b2f'><b>✓ Ya guardada en tu lista</b></p>"
 
 
@@ -208,16 +209,16 @@ class HoverTextEdit(QTextEdit):
             (start, _end), word, compound = hit
             self.word_clicked.emit(word, compound, start)
 
-    def set_marks(self, ranges):
-        """Resalta los rangos (inicio, fin) del texto: las palabras ya guardadas."""
+    def set_marks(self, ranges, pending=()):
+        """Resalta los rangos (inicio, fin) del texto: guardadas (verde) y pendientes (naranja)."""
         selections = []
-        for start, end in ranges:
+        for (start, end), color in [(r, MARK_COLOR) for r in ranges] + [(r, PENDING_COLOR) for r in pending]:
             cursor = QTextCursor(self.document())
             cursor.setPosition(start)
             cursor.setPosition(end, QTextCursor.KeepAnchor)
             sel = QTextEdit.ExtraSelection()
             sel.cursor = cursor
-            sel.format.setBackground(MARK_COLOR)
+            sel.format.setBackground(color)
             selections.append(sel)
         self.setExtraSelections(selections)
 

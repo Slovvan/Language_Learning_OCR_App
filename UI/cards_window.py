@@ -7,7 +7,8 @@ from PyQt5.QtWidgets import (QAbstractItemView, QFileDialog, QFormLayout, QHBoxL
                              QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton,
                              QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
-from Cards import anki_export
+import anki_export
+import Translator.languages as languages
 
 EXPORT_DIR = Path(__file__).resolve().parent / "exports"
 
@@ -27,7 +28,7 @@ class CardsWindow(QWidget):
         self._loading = False       # True mientras se rellenan los editores (no guardar)
         self._current_id = None     # tarjeta que se está editando
         self.setWindowTitle("Palabras guardadas")
-        self.resize(780, 660)
+        self.resize(780, 700)
 
         # --- lista ---
         self.table = QTableWidget(0, 3)
@@ -43,6 +44,8 @@ class CardsWindow(QWidget):
 
         # --- editor de la tarjeta seleccionada ---
         self.ed_word = QLineEdit()
+        self.ed_reading = QLineEdit()
+        self.ed_reading.setPlaceholderText("Lectura en kana (se rellena sola con el diccionario).")
         self.ed_meaning = QPlainTextEdit()
         self.ed_sentence = QPlainTextEdit()
         self.ed_sentence_es = QPlainTextEdit()
@@ -52,9 +55,11 @@ class CardsWindow(QWidget):
         self.ed_meaning.setPlaceholderText("Una línea por significado. Borra los que no quieras.")
         self.ed_sentence_es.setPlaceholderText("Traducción de la frase (se rellena sola al guardar la palabra).")
         form = QFormLayout()
+        self.form = form
         form.addRow("Palabra", self.ed_word)
+        form.addRow("Lectura", self.ed_reading)
         form.addRow("Significado", self.ed_meaning)
-        form.addRow("Frase (EN)", self.ed_sentence)
+        form.addRow("Frase", self.ed_sentence)
         form.addRow("Traducción", self.ed_sentence_es)
 
         # --- botones ---
@@ -80,6 +85,7 @@ class CardsWindow(QWidget):
 
         self.table.itemSelectionChanged.connect(self._on_selection)
         self.ed_word.textEdited.connect(lambda t: self._edited("word", t))
+        self.ed_reading.textEdited.connect(lambda t: self._edited("reading", t))
         self.ed_meaning.textChanged.connect(lambda: self._edited("meaning", self.ed_meaning.toPlainText()))
         self.ed_sentence.textChanged.connect(lambda: self._edited("sentence", self.ed_sentence.toPlainText()))
         self.ed_sentence_es.textChanged.connect(
@@ -87,7 +93,21 @@ class CardsWindow(QWidget):
         self.btn_delete.clicked.connect(self.delete_selected)
         self.btn_txt.clicked.connect(lambda: self.export("txt"))
         self.btn_apkg.clicked.connect(lambda: self.export("apkg"))
+        self.apply_language()
         self.reload()
+
+    # --- idioma ---
+    def apply_language(self):
+        """Títulos y campos según el idioma activo (cada idioma tiene su propia lista)."""
+        pack = languages.active()
+        self.setWindowTitle(f"Palabras guardadas — {pack.source_name}")
+        self.form.labelForField(self.ed_sentence).setText(f"Frase ({pack.source_name})")
+        self.form.labelForField(self.ed_sentence_es).setText(f"Traducción ({pack.target_name})")
+        japanese = pack.code == "ja"
+        self.form.labelForField(self.ed_reading).setVisible(japanese)
+        self.ed_reading.setVisible(japanese)
+        self.table.setHorizontalHeaderLabels(["Palabra" if not japanese else "Palabra · lectura",
+                                              "Significado", "Frase"])
 
     # --- contenido ---
     def selected_ids(self) -> list:
@@ -96,6 +116,7 @@ class CardsWindow(QWidget):
 
     def reload(self):
         """Vuelve a leer la lista de la base de datos, conservando la selección."""
+        self.apply_language()
         keep = set(self.selected_ids())
         cards = list(reversed(self.store.all()))             # la más nueva primero
         self.table.blockSignals(True)
@@ -111,7 +132,8 @@ class CardsWindow(QWidget):
         self._update_state()
 
     def _fill_row(self, row, card):
-        values = (card.word, " · ".join(card.meaning.splitlines()), card.sentence)
+        word = f"{card.word}  【{card.reading}】" if card.reading else card.word
+        values = (word, " · ".join(card.meaning.splitlines()), card.sentence)
         for col, value in enumerate(values):
             item = self.table.item(row, col)
             if item is None:
@@ -133,8 +155,10 @@ class CardsWindow(QWidget):
         self.btn_delete.setEnabled(has_selection)
         self.btn_txt.setEnabled(total > 0)
         self.btn_apkg.setEnabled(total > 0)
-        self.count.setText(f"{total} palabra(s) guardada(s)." if total else
-                           "Aún no hay palabras. Haz clic en una palabra del texto original para guardarla.")
+        name = languages.active().source_name
+        self.count.setText(f"{total} palabra(s) guardada(s) en {name}." if total else
+                           f"Aún no hay palabras en {name}. Haz clic en una palabra del texto original "
+                           "para guardarla.")
 
     # --- editor ---
     @staticmethod
@@ -157,11 +181,12 @@ class CardsWindow(QWidget):
         same_card = card is not None and card.id == previous
         self._loading = True
         self._load(self.ed_word, card.word if card else "", same_card)
+        self._load(self.ed_reading, card.reading if card else "", same_card)
         self._load(self.ed_meaning, card.meaning if card else "", same_card)
         self._load(self.ed_sentence, card.sentence if card else "", same_card)
         self._load(self.ed_sentence_es, card.sentence_es if card else "", same_card)
         self._loading = False
-        for editor in (self.ed_word, self.ed_meaning, self.ed_sentence, self.ed_sentence_es):
+        for editor in (self.ed_word, self.ed_reading, self.ed_meaning, self.ed_sentence, self.ed_sentence_es):
             editor.setEnabled(card is not None)
         self._update_state()
 
@@ -203,7 +228,8 @@ class CardsWindow(QWidget):
             suffix, label, write = ".apkg", "Paquete de Anki (*.apkg)", anki_export.export_apkg
         if path is None:
             EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-            default = str(EXPORT_DIR / f"vocabulario_{datetime.now():%Y%m%d_%H%M}{suffix}")
+            lang = cards[0].lang or "en"
+            default = str(EXPORT_DIR / f"vocabulario_{lang}_{datetime.now():%Y%m%d_%H%M}{suffix}")
             path, _ = QFileDialog.getSaveFileName(self, "Exportar", default, label)
             if not path:
                 return

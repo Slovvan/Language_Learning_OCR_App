@@ -14,6 +14,8 @@ class OcrResult:
     boxes: list = field(default_factory=list)
     # Solo japonés (modo furigana): [(inicio, fin, lectura)] sobre `text`. Lo rellena japanese.process.
     readings: list = field(default_factory=list)
+    # Solo japonés, modo vertical: las líneas son columnas (los caracteres se apilan de arriba abajo).
+    vertical: bool = False
 
 
 def preprocess(img: np.ndarray, scale: float = 2.0, binarize: bool = False) -> np.ndarray:

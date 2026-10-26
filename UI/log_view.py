@@ -1,11 +1,18 @@
 """Ventana del registro de frases: todas las capturas, con su traducción, sin borrarse."""
+from datetime import datetime
+from pathlib import Path
+
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QGuiApplication
-from PyQt5.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+from PyQt5.QtWidgets import (QAbstractItemView, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                              QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QTextEdit,
                              QVBoxLayout, QWidget)
 
+import Translator.languages as languages
 from UI.word_popup import HoverTextEdit
+import Cards.log_export as log_export
+
+EXPORT_DIR = Path(__file__).resolve().parent / "exports"
 
 
 def one_line(text: str) -> str:
@@ -52,9 +59,14 @@ class LogWindow(QWidget):
         self.btn_delete = QPushButton("Eliminar seleccionadas")
         self.btn_copy_src = QPushButton("Copiar original")
         self.btn_copy_dst = QPushButton("Copiar traducción")
+        self.btn_csv = QPushButton("Exportar (.csv)")
+        self.btn_csv.setToolTip("Exporta todas las frases que se ven (o solo las que elijas con Ctrl/Mayús).")
+        self.btn_txt = QPushButton("Exportar (.txt)")
         buttons = QHBoxLayout()
         buttons.addWidget(self.btn_delete)
         buttons.addStretch(1)
+        buttons.addWidget(self.btn_csv)
+        buttons.addWidget(self.btn_txt)
         buttons.addWidget(self.btn_copy_src)
         buttons.addWidget(self.btn_copy_dst)
         self.info = QLabel()
@@ -62,9 +74,11 @@ class LogWindow(QWidget):
         layout = QVBoxLayout(self)
         layout.addLayout(top)
         layout.addWidget(self.table, 3)
-        layout.addWidget(QLabel("Original — mouse sobre una palabra: significado · clic: guardarla"))
+        self.lbl_original = QLabel()
+        self.lbl_translation = QLabel()
+        layout.addWidget(self.lbl_original)
         layout.addWidget(self.original, 2)
-        layout.addWidget(QLabel("Traducción"))
+        layout.addWidget(self.lbl_translation)
         layout.addWidget(self.translation, 2)
         layout.addLayout(buttons)
         layout.addWidget(self.info)
@@ -72,6 +86,8 @@ class LogWindow(QWidget):
         self.search.textChanged.connect(lambda _t: self.reload())
         self.table.itemSelectionChanged.connect(self._on_selection)
         self.btn_delete.clicked.connect(self.delete_selected)
+        self.btn_csv.clicked.connect(lambda: self.export("csv"))
+        self.btn_txt.clicked.connect(lambda: self.export("txt"))
         self.btn_copy_src.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.original.toPlainText()))
         self.btn_copy_dst.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.translation.toPlainText()))
         self.original.word_hovered.connect(self.words.hover)
@@ -79,7 +95,16 @@ class LogWindow(QWidget):
         self.original.wheel_moved.connect(self.words.scroll_popup)
         self.original.word_clicked.connect(self._on_word_clicked)
         self.original.textChanged.connect(self.refresh_marks)
+        self.apply_language()
         self.reload()
+
+    def apply_language(self):
+        """Títulos según el idioma activo (cada idioma tiene su propio registro)."""
+        pack = languages.active()
+        self.setWindowTitle(f"Registro de frases — {pack.source_name}")
+        self.lbl_original.setText(f"Original ({pack.source_name}) — mouse sobre una palabra: "
+                                  "significado · clic: guardarla")
+        self.lbl_translation.setText(f"Traducción ({pack.target_name})")
 
     # --- contenido ---
     def selected_ids(self) -> list:
@@ -88,6 +113,7 @@ class LogWindow(QWidget):
 
     def reload(self):
         """Vuelve a leer el registro (respetando la búsqueda) y conserva la selección."""
+        self.apply_language()
         keep = set(self.selected_ids())
         entries = self.log.all(self.search.text())
         self.table.blockSignals(True)
@@ -111,6 +137,8 @@ class LogWindow(QWidget):
         self._on_selection()
         total = len(self.log)
         self.count.setText(f"{len(entries)} de {total}" if self.search.text().strip() else f"{total} frase(s)")
+        self.btn_csv.setEnabled(bool(entries))
+        self.btn_txt.setEnabled(bool(entries))
 
     @staticmethod
     def _set(box, text):
@@ -125,7 +153,8 @@ class LogWindow(QWidget):
         self.btn_delete.setEnabled(bool(ids))
 
     def refresh_marks(self):
-        self.original.set_marks(self.words.marks(self.original.toPlainText()))
+        text = self.original.toPlainText()
+        self.original.set_marks(self.words.marks(text), self.words.pending_marks(text))
 
     def _on_word_clicked(self, word, compound, start):
         merge = self._current.merged if self._current else True
@@ -141,6 +170,31 @@ class LogWindow(QWidget):
                 self, "Eliminar", f"¿Eliminar {len(ids)} frase(s) del registro? No se puede deshacer."
         ) == QMessageBox.Yes:
             self.delete_ids(ids)
+
+    def export(self, kind: str, path=None):
+        """Exporta todas las frases que se ven (respeta la búsqueda y el idioma activo). Si eliges
+        varias en la lista (Ctrl o Mayús), solo esas. Una sola elegida no cuenta: la lista siempre
+        deja una marcada para mostrarla abajo. `kind` es «csv» o «txt»; sin `path` pregunta dónde."""
+        ids = set(self.selected_ids())
+        if len(ids) < 2:
+            ids = set()
+        entries = [e for e in self.log.all(self.search.text()) if not ids or e.id in ids]
+        if not entries:
+            return
+        suffix, label, write = ((".csv", "Hoja de cálculo (*.csv)", log_export.export_csv) if kind == "csv"
+                                else (".txt", "Texto (*.txt)", log_export.export_txt))
+        if path is None:
+            EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+            default = str(EXPORT_DIR / f"frases_{entries[0].lang}_{datetime.now():%Y%m%d_%H%M}{suffix}")
+            path, _ = QFileDialog.getSaveFileName(self, "Exportar frases", default, label)
+            if not path:
+                return
+        try:
+            count = write(entries, path)
+        except OSError as exc:
+            self.info.setText(f"No se pudo escribir el archivo: {exc}")
+            return
+        self.info.setText(f"✓ {count} frase(s) exportada(s): {path}")
 
     def delete_ids(self, ids):
         self.log.delete(ids)

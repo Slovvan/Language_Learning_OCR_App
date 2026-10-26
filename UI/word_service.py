@@ -19,11 +19,12 @@ class WordService(QObject):
     card_requested = pyqtSignal(int, str, str)    # id de tarjeta, frase, palabra a traducir ("" = ninguna)
     message = pyqtSignal(str)                     # aviso corto para mostrar al usuario
 
-    def __init__(self, dictionary, store, popup, parent=None):
+    def __init__(self, dictionary, store, popup, parent=None, glossary=None):
         super().__init__(parent)
         self.dictionary = dictionary
         self.store = store
         self.popup = popup
+        self.glossary = glossary                  # UserGlossary: palabras sin significado, para rellenar
         # El mouse puede ir de la palabra a la ventanita para desplazarla: al dejar la palabra,
         # la ventanita espera un momento antes de ocultarse (y se queda si el mouse entra en ella).
         self._hide_timer = QTimer(self)
@@ -44,6 +45,20 @@ class WordService(QObject):
         return [(start, end) for start, end, word, compound in iter_words(text)
                 if self.is_saved(word, compound)]
 
+    def pending_marks(self, text: str) -> list:
+        """Rangos de `text` que son palabras pendientes (sin significado, en tu glosario)."""
+        if self.glossary is None:
+            return []
+        keys = self.glossary.pending_keys(self.store.lang)
+        if not keys:
+            return []
+        return [(start, end) for start, end, word, compound in iter_words(text)
+                if self.dictionary.key_for(word, compound) in keys]
+
+    def _is_pending(self, word: str, compound: str = "") -> bool:
+        return self.glossary is not None and \
+            self.dictionary.key_for(word, compound) in self.glossary.pending_keys(self.store.lang)
+
     def click(self, word: str, compound: str, text: str, start: int, merge: bool):
         """Guarda la palabra con su significado y su frase (una vez por lema).
 
@@ -56,7 +71,16 @@ class WordService(QObject):
             return None
         sentence = languages.active().sentence_at(text, start, merge) or ""
         result = self.dictionary.lookup(word, compound)
-        card = self.store.add(build_card(word, key, result, sentence))
+        if result is None and self.glossary is not None and self.dictionary.available:
+            # Sin significado: va a la lista de pendientes para rellenarla (no se crea tarjeta vacía).
+            if self.glossary.add_pending(self.store.lang, key, word, sentence) is None:
+                self.message.emit(f"«{key}» ya está en Pendientes.")
+            else:
+                self.message.emit(f"«{key}» no tiene significado: añadida a Pendientes "
+                                  f"({self.glossary.count(self.store.lang, True)}).")
+            self.saved_changed.emit()
+            return None
+        card = self.store.add(build_card(word, key, result, sentence, self.store.lang))
         # Sin entrada en el diccionario (p. ej. «mana»): se pide también la traducción de la palabra.
         self.card_requested.emit(card.id, sentence, "" if result is not None else word)
         self.message.emit(f"✓ «{card.word}» guardada ({len(self.store)} en la lista).")
@@ -87,7 +111,13 @@ class WordService(QObject):
         saved = self.is_saved(word, compound)
         result = self.dictionary.lookup(word, compound, full=True)
         if result is None:
-            self.popup.show_message(f"«{word}»: sin entrada en el diccionario", global_pos, saved)
+            if self.glossary is not None and self._is_pending(word, compound):
+                text = f"«{word}»: sin entrada · ya está en Pendientes (ábrelos para escribir el significado)"
+            elif self.glossary is not None:
+                text = f"«{word}»: sin entrada en el diccionario · clic: añadir a Pendientes"
+            else:
+                text = f"«{word}»: sin entrada en el diccionario"
+            self.popup.show_message(text, global_pos, saved)
         else:
             self.popup.show_result(result, global_pos, saved)
 

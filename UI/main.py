@@ -18,18 +18,21 @@ from PyQt5.QtWidgets import (QApplication, QCheckBox, QComboBox, QHBoxLayout, QL
                              QPushButton, QTextEdit, QVBoxLayout, QWidget)
 
 
-from UI.capture import bgr_to_qpixmap, grab_screen
-from Cards.cards import CardStore
-from UI.cards_window import CardsWindow
 from DB.dictionary import Dictionary
 from DB.dictionary_ja import JaDictionary
 from DB.ja_nlp import tokenizer as ja_tokenizer
+from DB.phrase_log import PhraseLog
+from DB.glossary import GlossaryDictionary, UserGlossary
+from UI.glossary_window import GlossaryWindow
 from UI.log_view import LogWindow
 from UI.overlay import CaptureOverlay
-from DB.phrase_log import PhraseLog
 from UI.word_popup import HoverTextEdit, WordPopup
 from UI.word_service import WordService
 from UI.ocr_worker import OcrWorker
+from UI.capture import bgr_to_qpixmap, grab_screen
+from UI.cards_window import CardsWindow
+from Cards.cards import CardStore
+
 import Translator.japanese as japanese
 import Translator.languages as languages
 
@@ -87,6 +90,7 @@ class MainWindow(QWidget):
         self.resize(560, 700)
         self.overlay = None
         self.cards_window = None
+        self.glossary_window = None
         self.log_window = None
         self._ocr_info = ""
         self._merge_used = True     # ¿se unieron las líneas en la captura actual?
@@ -100,17 +104,20 @@ class MainWindow(QWidget):
         if lang not in languages.PACKS:
             lang = "en"
         mode = str(self.settings.value("ocr_mode", "normal"))
-        if mode not in ("normal", "kana"):
+        if mode not in ("normal", "kana", "vertical"):
             mode = "normal"
         languages.set_active(lang)
 
         # --- diccionario local, tarjetas, registro y ventanita emergente ---
         self.dictionary = Dictionary()
         self.dictionary_ja = JaDictionary()
-        self.store = CardStore()
-        self.log = PhraseLog()
+        self.store = CardStore(lang=lang)       # cada idioma tiene su lista de palabras...
+        self.log = PhraseLog(lang=lang)         # ...y su registro de frases
+        self.glossary = UserGlossary()          # palabras sin significado (pendientes) y las que rellenas tú
+        self._dicts = {"en": GlossaryDictionary(self.dictionary, self.glossary, "en"),
+                       "ja": GlossaryDictionary(self.dictionary_ja, self.glossary, "ja")}
         self.popup = WordPopup()
-        self.words = WordService(self._dictionary_for(lang), self.store, self.popup, self)
+        self.words = WordService(self._dictionary_for(lang), self.store, self.popup, self, self.glossary)
         self.words.saved_changed.connect(self._cards_changed)
         self.words.message.connect(self._on_word_message)
         self.words.card_requested.connect(self.card_requested)
@@ -120,6 +127,7 @@ class MainWindow(QWidget):
         self.btn_capture.setEnabled(False)
         self.btn_cards = QPushButton()
         self.btn_log = QPushButton()
+        self.btn_glossary = QPushButton()
         self.btn_copy_src = QPushButton("Copiar original")
         self.btn_copy_dst = QPushButton("Copiar traducción")
         self.combo_lang = QComboBox()
@@ -129,8 +137,10 @@ class MainWindow(QWidget):
         self.combo_mode = QComboBox()
         self.combo_mode.addItem("OCR normal (con kanji)", "normal")
         self.combo_mode.addItem("OCR solo kana (todo hiragana/katakana)", "kana")
+        self.combo_mode.addItem("OCR texto vertical (columnas, de derecha a izquierda)", "vertical")
         self.combo_mode.setCurrentIndex(self.combo_mode.findData(mode))
-        self.combo_mode.setToolTip("«Solo kana» corrige más confusiones en juegos sin kanji.")
+        self.combo_mode.setToolTip("«Solo kana» corrige más confusiones en juegos sin kanji. «Texto vertical» lee cada columna "
+            "como una frase y las une de derecha a izquierda.")
         self.chk_merge = QCheckBox("Unir líneas partidas (diálogos)")
         self.chk_merge.setChecked(True)
         self.chk_merge.setToolTip(
@@ -164,6 +174,7 @@ class MainWindow(QWidget):
         buttons2 = QHBoxLayout()
         buttons2.addWidget(self.btn_cards)
         buttons2.addWidget(self.btn_log)
+        buttons2.addWidget(self.btn_glossary)
         buttons3 = QHBoxLayout()
         buttons3.addWidget(self.btn_copy_src)
         buttons3.addWidget(self.btn_copy_dst)
@@ -213,6 +224,7 @@ class MainWindow(QWidget):
         self.btn_capture.clicked.connect(self.start_capture)
         self.btn_cards.clicked.connect(self.open_cards)
         self.btn_log.clicked.connect(self.open_log)
+        self.btn_glossary.clicked.connect(self.open_glossary)
         self.btn_copy_src.clicked.connect(lambda: self.copy(self.output))
         self.btn_copy_dst.clicked.connect(lambda: self.copy(self.translation))
         self.output.word_hovered.connect(self.words.hover)
@@ -230,7 +242,7 @@ class MainWindow(QWidget):
 
     # --- idioma ---
     def _dictionary_for(self, code):
-        return self.dictionary_ja if code == "ja" else self.dictionary
+        return self._dicts[code]
 
     def _apply_language_ui(self):
         pack = languages.active()
@@ -264,6 +276,15 @@ class MainWindow(QWidget):
         self._last_image = None
         self.btn_capture.setEnabled(False)
         self.status.setText("Cambiando de idioma...")
+        self._log_id = None
+        self.store.set_language(code)          # las palabras y el registro son los de ese idioma
+        self.log.set_language(code)
+        self._update_buttons()
+        for w in (self.cards_window, self.log_window):
+            if w is not None:
+                w.reload()
+        if self.glossary_window is not None:
+            self.glossary_window.set_language(code)
         self.refresh_marks()
         self.configure_requested.emit(code, self.combo_mode.currentData())
 
@@ -275,15 +296,19 @@ class MainWindow(QWidget):
     # --- palabras guardadas ---
     def refresh_marks(self):
         """Resalta las palabras guardadas en el texto original de esta ventana y en la capa."""
-        self.output.set_marks(self.words.marks(self.output.toPlainText()))
+        self.output.set_marks(self.words.marks(self.output.toPlainText()),
+                              self.words.pending_marks(self.output.toPlainText()))
         if self.overlay is not None and self.overlay.isVisible():
-            self.overlay.set_marks(self.words.marks(self.overlay.text))
+            self.overlay.set_marks(self.words.marks(self.overlay.text), self.words.pending_marks(self.overlay.text))
         if self.log_window is not None:
             self.log_window.refresh_marks()
 
     def _update_buttons(self):
-        self.btn_cards.setText(f"Palabras guardadas ({len(self.store)})")
-        self.btn_log.setText(f"Registro de frases ({len(self.log)})")
+        name = languages.active().source_name
+        self.btn_cards.setText(f"Palabras guardadas — {name} ({len(self.store)})")
+        self.btn_log.setText(f"Registro de frases — {name} ({len(self.log)})")
+        lang = languages.active().code
+        self.btn_glossary.setText(f"Pendientes — {name} ({self.glossary.count(lang, True)})")
 
     def on_word_clicked(self, word, compound, start):
         self.words.click(word, compound, self.output.toPlainText(), start, self._merge_used)
@@ -318,6 +343,17 @@ class MainWindow(QWidget):
         self.cards_window.raise_()
         self.cards_window.activateWindow()
 
+    def open_glossary(self):
+        lang = languages.active().code
+        if self.glossary_window is None:
+            self.glossary_window = GlossaryWindow(
+                self.glossary, lambda word: self.words.dictionary.key_for(word, ""), self)
+            self.glossary_window.changed.connect(self._cards_changed)
+        self.glossary_window.set_language(lang)
+        self.glossary_window.show()
+        self.glossary_window.raise_()
+        self.glossary_window.activateWindow()
+
     def open_log(self):
         if self.log_window is None:
             self.log_window = LogWindow(self.log, self.words, self)
@@ -331,7 +367,7 @@ class MainWindow(QWidget):
         """Minimiza las ventanas de la app para que no salgan en la captura (siguen en la barra
         de tareas y no se vuelven a abrir solas). ¿Alguna estaba a la vista?"""
         shown = False
-        for w in (self, self.cards_window, self.log_window):
+        for w in (self, self.cards_window, self.log_window, self.glossary_window):
             if w is not None and w.isVisible() and not w.isMinimized():
                 shown = True
                 w.showMinimized()
@@ -409,7 +445,7 @@ class MainWindow(QWidget):
             self.status.setText("Sin texto detectado.")
         if self.overlay is not None and self.overlay.isVisible():
             self.overlay.set_result(res)
-            self.overlay.set_marks(self.words.marks(self.overlay.text))
+            self.overlay.set_marks(self.words.marks(self.overlay.text), self.words.pending_marks(self.overlay.text))
 
     def on_translated(self, text):
         self.translation.setPlainText(text)
@@ -446,7 +482,7 @@ class MainWindow(QWidget):
         self.words.hide_popup()
         if self.overlay is not None:
             self.overlay.hide()
-        for w in (self.cards_window, self.log_window):
+        for w in (self.cards_window, self.log_window, self.glossary_window):
             if w is not None:
                 w.close()
         self.hotkey.stop()
@@ -454,6 +490,7 @@ class MainWindow(QWidget):
         self.thread.wait(3000)
         self.dictionary.close()
         self.dictionary_ja.close()
+        self.glossary.close()
         self.store.close()
         self.log.close()
         QApplication.quit()

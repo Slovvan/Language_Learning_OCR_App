@@ -19,6 +19,7 @@ from PyQt5.QtGui import (QColor, QFont, QFontMetrics, QPainter, QPen, QRegion,
                          QTextDocument)
 from PyQt5.QtWidgets import QApplication, QWidget
 
+import Translator.languages as languages
 from UI.capture import bgr_to_qpixmap
 from UI.word_popup import iter_words
 
@@ -27,13 +28,14 @@ SELECT, READING, TEXT = range(3)          # estados de la capa
 DIM = QColor(0, 0, 0, 120)                # oscurece lo que queda fuera de la región
 ACCENT = QColor(0, 200, 255)
 MARK = QColor(46, 190, 80, 150)           # fondo de las palabras ya guardadas
+PENDING = QColor(240, 150, 30, 150)       # fondo de las palabras sin significado (pendientes)
 HOVER = QColor(255, 255, 255, 70)
 PAD_X, PAD_Y = 3, 2                       # cuánto sobresale el parche del cuadro del OCR
 RING = 3                                  # grosor (px) del borde que se mira para sacar el color de fondo
 HINT_SELECT = "Arrastra para elegir la región · Esc cancela"
 HINT_READING = "Leyendo el texto…"
-HINT_TEXT = "Clic: guardar palabra · T traducción · O original · M unir líneas · Clic der.: otra región · Esc"
-HINT_EMPTY = "No se detectó texto · Clic derecho: otra región · Esc cierra"
+HINT_TEXT = "Clic IZQ - Guardar Palabra · T - Traducción · O - Original · M unir líneas · Clic DER - otra región · Esc - Cerrar"
+HINT_EMPTY = "No se detectó texto · Clic der - otra región · Esc - Cerrar"
 
 
 @dataclass
@@ -42,7 +44,7 @@ class _Word:
     end: int
     word: str
     compound: str
-    x0: float           # extremos horizontales (px lógicos de la pantalla)
+    x0: float           # extremos horizontales (px lógicos de la pantalla); en una columna vertical, los verticales
     x1: float
 
 
@@ -56,6 +58,8 @@ class _Line:
     fg: QColor
     font: QFont
     words: list = field(default_factory=list)
+    vertical: bool = False   # columna de texto vertical: los caracteres se apilan de arriba abajo
+    cell: float = 0.0        # alto de cada carácter en una columna vertical
 
 
 def sample_colors(crop: np.ndarray, box) -> tuple:
@@ -138,6 +142,7 @@ class CaptureOverlay(QWidget):
         self._lines = []
         self.text = ""                             # texto completo de la capa (líneas unidas con \n)
         self._marks = set()                        # (inicio, fin) de las palabras guardadas
+        self._pending = set()                      # ...y de las pendientes (sin significado)
         self._translation = ""
         self._message = ""                         # error u otro aviso que sustituye a la traducción
         self._busy = False                         # esperando la traducción
@@ -191,6 +196,7 @@ class CaptureOverlay(QWidget):
         self._region = self._crop = None
         self._lines, self.text = [], ""
         self._marks = set()
+        self._pending = set()
         self._translation = self._message = ""
         self._busy = False
         self._panel = None
@@ -224,6 +230,7 @@ class CaptureOverlay(QWidget):
         """Dibuja el texto reconocido encima del original. `res` es un ocr_engine.OcrResult."""
         self._end_hover()
         self._lines, texts = [], []
+        self._vertical = bool(getattr(res, "vertical", False))
         offset = 0
         base = self.font()
         sx, sy = self._scale
@@ -243,9 +250,14 @@ class CaptureOverlay(QWidget):
             entries.append((text, rect, bg, fg))
         # Un solo tamaño para todo el texto: el que cabe en la línea más ajustada (sin bajar de
         # tres cuartos de la mediana, para que una línea rara no encoja todas las demás).
-        font = uniform_font([(t, r) for t, r, _b, _f in entries], base)
+        font = uniform_font([(t, r) for t, r, _b, _f in entries if not self._is_vertical(t, r)], base)
         fm = QFontMetrics(font)
         for text, rect, bg, fg in entries:
+            if self._is_vertical(text, rect):
+                self._add_vertical(text, rect, bg, fg, base, offset)
+                texts.append(text)
+                offset += len(text) + 1
+                continue
             width = fm.horizontalAdvance(text)
             wide = rect.adjusted(0, 0, max(0.0, width - rect.width()), 0)   # si se pasa, el parche la cubre
             words = [_Word(s, e, w, c, rect.left() + fm.horizontalAdvance(text[:s]),
@@ -262,6 +274,21 @@ class CaptureOverlay(QWidget):
         self._rebuild_panel()
         self.update()
 
+    def _is_vertical(self, text: str, rect: QRectF) -> bool:
+        return self._vertical and len(text.strip()) > 0
+
+    def _add_vertical(self, text, rect, bg, fg, base, offset):
+        """Columna de texto vertical: cada carácter en su celda, de arriba abajo, en el sitio original."""
+        cell = max(8.0, min(rect.width(), rect.height() / max(1, len(text))))
+        font = QFont(base)
+        font.setStyleStrategy(QFont.PreferAntialias)
+        font.setPixelSize(max(8, int(cell * 0.82)))
+        height = cell * len(text)
+        box = QRectF(rect.center().x() - cell / 2, rect.top(), cell, max(height, rect.height()))
+        words = [_Word(s, e, w, c, box.top() + s * cell, box.top() + e * cell) for s, e, w, c in iter_words(text)]
+        patch = box.adjusted(-PAD_X, -PAD_Y, PAD_X, PAD_Y)
+        self._lines.append(_Line(text, offset, box, patch, bg, fg, font, words, True, cell))
+
     def set_translation(self, text: str):
         self._translation = text
         self._busy = False
@@ -275,9 +302,10 @@ class CaptureOverlay(QWidget):
         self._rebuild_panel()
         self.update()
 
-    def set_marks(self, ranges):
-        """Palabras ya guardadas: rangos (inicio, fin) del texto completo (`self.text`)."""
+    def set_marks(self, ranges, pending=()):
+        """Palabras ya guardadas y pendientes: rangos (inicio, fin) del texto completo (`self.text`)."""
         self._marks = set(ranges)
+        self._pending = set(pending)
         self.update()
 
     def show_toast(self, text: str):
@@ -343,8 +371,9 @@ class CaptureOverlay(QWidget):
         point = QPointF(pos)
         for li, line in enumerate(self._lines):
             if line.patch.contains(point):
+                coord = point.y() if line.vertical else point.x()
                 for wi, w in enumerate(line.words):
-                    if w.x0 <= point.x() < w.x1:
+                    if w.x0 <= coord < w.x1:
                         return li, wi
                 return None
         return None
@@ -483,10 +512,16 @@ class CaptureOverlay(QWidget):
         for li, line in enumerate(self._lines):
             p.fillRect(line.patch, line.bg)
             fm = QFontMetrics(line.font)
+            if line.vertical:
+                self._paint_vertical(p, li, line, fm)
+                continue
             for wi, w in enumerate(line.words):
                 span = QRectF(w.x0 - 1, line.patch.top() + 1, w.x1 - w.x0 + 2, line.patch.height() - 2)
-                if (line.offset + w.start, line.offset + w.end) in self._marks:
+                span_key = (line.offset + w.start, line.offset + w.end)
+                if span_key in self._marks:
                     p.fillRect(span, MARK)
+                elif span_key in self._pending:
+                    p.fillRect(span, PENDING)
                 if self._hover_key == (li, wi):
                     p.fillRect(span, HOVER)
                     p.setPen(QPen(line.fg, 1))
@@ -496,6 +531,26 @@ class CaptureOverlay(QWidget):
             p.setPen(line.fg)
             baseline = line.rect.center().y() + (fm.ascent() - fm.descent()) / 2
             p.drawText(QPointF(line.rect.left(), baseline), line.text)
+
+    def _paint_vertical(self, p: QPainter, li: int, line, fm):
+        r = line.rect
+        for wi, w in enumerate(line.words):
+            span = QRectF(r.left() - 1, w.x0, r.width() + 2, w.x1 - w.x0)
+            span_key = (line.offset + w.start, line.offset + w.end)
+            if span_key in self._marks:
+                p.fillRect(span, MARK)
+            elif span_key in self._pending:
+                p.fillRect(span, PENDING)
+            if self._hover_key == (li, wi):
+                p.fillRect(span, HOVER)
+                p.setPen(QPen(line.fg, 1))
+                p.drawLine(QPointF(span.right() - 1, span.top()), QPointF(span.right() - 1, span.bottom()))
+        p.setFont(line.font)
+        p.setPen(line.fg)
+        for i, ch in enumerate(line.text):
+            ch = "｜" if ch == "ー" else ch                      # la barra larga va vertical
+            cell = QRectF(r.left(), r.top() + i * line.cell, r.width(), line.cell)
+            p.drawText(cell, Qt.AlignCenter, ch)
 
     def _pill(self, p: QPainter, text: str, y: int, color: QColor = QColor(18, 20, 26, 225)):
         font = QFont(self.font())

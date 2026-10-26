@@ -23,12 +23,14 @@ class Mode(str, Enum):
     NORMAL = "normal"
     FURIGANA = "furigana"
     KANA = "kana"
+    VERTICAL = "vertical"      # texto en columnas: cada columna una línea, de derecha a izquierda
 
 
 RUBY_MAX_RATIO = 0.7        # el furigana mide, como mucho, esta fracción de la altura del texto base
 RUBY_MIN_OVERLAP = 0.4      # fracción del ancho del furigana que debe quedar sobre el texto base
 RUBY_MAX_GAP = 0.8          # separación vertical máxima (en alturas del texto base)
 NOISE_SCORE = 0.85          # una caja pequeña con kanji y menos confianza que esto, sobre una línea, es ruido
+COLUMN_OVERLAP = 0.5       # solapamiento horizontal mínimo (fracción de la caja más estrecha) para ser de la misma columna
 ROW_OVERLAP = 0.5           # solapamiento vertical mínimo para considerar que dos cajas son de la misma fila
 SPACE_GAP = 1.0             # hueco (en alturas de línea) a partir del cual se separan trozos con un espacio
 GAP_EDGE = 0.5              # franja de relleno: lo que se sale (en anchos de carácter) en los extremos de la línea
@@ -65,6 +67,56 @@ _KATA_LOOKALIKE = {"一": "ー", "卜": "ト", "口": "ロ", "力": "カ", "夕"
                    "二": "ニ", "八": "ハ"}
 _HIRA_LOOKALIKE = {"〈": "く", "＜": "く"}
 _EDGE = set("、。！？!?…「」『』（）() 　")        # límites de palabra: signos, espacios y fin de línea
+_ORPHAN = set("！？!?。…‥、」』）)")                  # signos que no pueden ir solos en una línea
+# Cifras y letras de ancho completo -> ASCII (5０ -> 50). Una a una, para no mover posiciones.
+_WIDE = {**{chr(0xFF10 + i): chr(0x30 + i) for i in range(10)},
+         **{chr(0xFF21 + i): chr(0x41 + i) for i in range(26)},
+         **{chr(0xFF41 + i): chr(0x61 + i) for i in range(26)}}
+_ANCHOR_EXCLUDE = set("ー・")
+
+
+def _fix_runs(text: str) -> str:
+    """Rachas de katakana con falsos amigos (口一ド -> ロード): si la racha tiene al menos un katakana
+    de verdad, los falsos amigos que contiene son katakana. Un falso amigo en el borde de la racha
+    pegado a un kanji o hiragana se queda como está (ボール一個, ラーメン一つ, カード二人)."""
+    out, n, i = list(text), len(text), 0
+    while i < n:
+        if is_kata(text[i]) or text[i] in _KATA_LOOKALIKE:
+            j = i
+            while j < n and (is_kata(text[j]) or text[j] in _KATA_LOOKALIKE):
+                j += 1
+            run = text[i:j]
+            if len(run) >= 2 and any(is_kata(c) and c not in _ANCHOR_EXCLUDE for c in run):
+                for k in range(i, j):
+                    c = text[k]
+                    if c not in _KATA_LOOKALIKE:
+                        continue
+                    if k == i and i > 0 and not _kata_or_edge(text[i - 1]):
+                        continue                         # 一 tras kanji/hiragana: 一口, 買い一括
+                    if k == j - 1 and j < n and not _kata_or_edge(text[j]):
+                        continue                         # 一 antes de kanji/hiragana: ボール一個, ラーメン一つ
+                    out[k] = _KATA_LOOKALIKE[c]
+            i = j
+        else:
+            i += 1
+    return "".join(out)
+
+
+def _attach_orphans(lines: list) -> list:
+    """Una línea que solo trae signos de cierre («！» suelto bajo «敵を倒した») se pega a la anterior."""
+    out = []
+    for line in lines:
+        t = line.text.strip()
+        if out and t and all(c in _ORPHAN for c in t):
+            prev = out[-1]
+            start = len(prev.text)
+            prev.text += t
+            prev.segments = prev.segments + [(start, start + len(t), line.box)]
+            prev.box = (min(prev.box[0], line.box[0]), min(prev.box[1], line.box[1]),
+                        max(prev.box[2], line.box[2]), max(prev.box[3], line.box[3]))
+            continue
+        out.append(line)
+    return out
 
 
 def _kata_or_edge(c: str) -> bool:
@@ -81,7 +133,9 @@ def fix_chars(text: str, mode: Mode) -> str:
     KANA (todo el texto es kana): basta con un vecino kana y ninguno kanji; entre hiragana solo 一→ー.
     """
     n = len(text)
-    out = list(text)
+    if mode is not Mode.KANA:
+        text = _fix_runs(text)
+    out = [_WIDE.get(c, c) for c in text]
     for i, c in enumerate(text):
         prev = text[i - 1] if i else ""
         nxt = text[i + 1] if i + 1 < n else ""
@@ -217,6 +271,37 @@ def _group_rows(items: list) -> list:
     return [sorted(r[0], key=lambda i: i.box[0]) for r in rows]
 
 
+def _group_columns(items: list) -> list:
+    """Modo vertical: agrupa las cajas por columna (mismo ancho de texto, una sobre otra). Las
+    columnas salen de derecha a izquierda; dentro de cada una, de arriba abajo."""
+    cols = []                                                  # [[items], x0, x1]
+    for it in sorted(items, key=lambda i: -(i.box[0] + i.box[2]) / 2):
+        for col in cols:
+            ov = min(it.box[2], col[2]) - max(it.box[0], col[1])
+            if ov >= COLUMN_OVERLAP * min(it.w, col[2] - col[1]) > 0:
+                col[0].append(it)
+                col[1], col[2] = min(col[1], it.box[0]), max(col[2], it.box[2])
+                break
+        else:
+            cols.append([[it], it.box[0], it.box[2]])
+    cols.sort(key=lambda c: -(c[1] + c[2]))
+    return [sorted(c[0], key=lambda i: i.box[1]) for c in cols]
+
+
+def _merge_column(col: list) -> "_Line":
+    """Una columna entera como una sola línea (los trozos se pegan sin espacios)."""
+    text = "".join(i.text for i in col)
+    total = sum(len(i.text) for i in col) or 1
+    score = sum(i.score * len(i.text) for i in col) / total
+    box = (min(i.box[0] for i in col), min(i.box[1] for i in col),
+           max(i.box[2] for i in col), max(i.box[3] for i in col))
+    pos, segments = 0, []
+    for i in col:
+        segments.append((pos, pos + len(i.text), i.box))
+        pos += len(i.text)
+    return _Line(text, score, box, segments, [])
+
+
 @dataclass
 class _Line:
     text: str
@@ -302,11 +387,16 @@ def _process(lines: list, boxes: list, mode: Mode, img=None, reader=None):
     items = [_Item(t, float(s), tuple(b)) for (t, s), b in zip(lines, boxes)
              if t.strip() and not (len(t.strip()) <= STRAY_MAX_LEN and not _has_japanese(t) and float(s) < STRAY_SCORE)]
     rubies = []
+    if mode is Mode.VERTICAL:
+        merged = [_merge_column(col) for col in _group_columns(items)]
+        for line in merged:
+            line.text = fix_chars(line.text, mode)
+        return merged, []
     if mode is not Mode.KANA:
         cands, items = _split_furigana(items)
         rubies = _refine(cands, img if mode is Mode.FURIGANA else None, reader if mode is Mode.FURIGANA else None)
 
-    merged = [_merge_row(row) for row in _group_rows(items)]
+    merged = _attach_orphans([_merge_row(row) for row in _group_rows(items)])
     for line in merged:
         line.text = fix_chars(line.text, mode)
 
@@ -397,4 +487,4 @@ def process(res, mode=Mode.NORMAL, img=None, reader=None):
         pos += len(text) + 1
     readings = [(offsets[li] + s, offsets[li] + e, text) for li, s, e, text in per_line]
     return replace(res, text="\n".join(t for t, _ in lines), lines=lines,
-                   boxes=[l.box for l in merged], readings=readings)
+                   boxes=[l.box for l in merged], readings=readings, vertical=mode is Mode.VERTICAL)

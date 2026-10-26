@@ -1,8 +1,9 @@
 """Tarjetas de vocabulario: datos, base SQLite y construcción a partir de un clic.
 
 Una tarjeta guarda la palabra, su significado, la frase donde apareció y la traducción de esa
-frase. Hay una sola tarjeta por palabra: la clave es su lema principal (ver Dictionary.key_for),
-así que «sword» y «swords» son la misma tarjeta. La base está en data/cards.db, separada del
+frase (y, en japonés, su lectura). Hay una sola tarjeta por palabra y por idioma: la clave es su
+lema principal (ver Dictionary.key_for), así que «sword» y «swords» son la misma tarjeta.
+Cada idioma tiene su propia lista: el almacén trabaja con el idioma activo (`set_language`). La base está en data/cards.db, separada del
 diccionario, para que reconstruir el diccionario no borre tus tarjetas.
 
 Esta parte no usa Qt: se puede probar sola.
@@ -19,22 +20,25 @@ DB_PATH = Path(__file__).resolve().parent / "data" / "cards.db"
 
 MAX_MEANING_LINES = 3      # significados que se copian a la tarjeta (se pueden editar después)
 MAX_DEFINITION = 160       # caracteres de cada definición en inglés
-EDITABLE = frozenset({"word", "meaning", "extra", "sentence", "sentence_es"})
+EDITABLE = frozenset({"word", "reading", "meaning", "extra", "sentence", "sentence_es"})
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS cards (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    key         TEXT NOT NULL UNIQUE,      -- lema principal: evita duplicados
+    key         TEXT NOT NULL,             -- lema principal: evita duplicados (dentro de cada idioma)
+    lang        TEXT NOT NULL DEFAULT 'en',  -- idioma del juego: en, ja
     word        TEXT NOT NULL,             -- lo que se ve en el anverso
     surface     TEXT NOT NULL,             -- la palabra tal como apareció en la frase
+    reading     TEXT NOT NULL DEFAULT '',  -- lectura en kana (japonés)
     meaning     TEXT NOT NULL DEFAULT '',  -- una línea por significado
     extra       TEXT NOT NULL DEFAULT '',  -- sinónimos y antónimos
     sentence    TEXT NOT NULL DEFAULT '',
-    sentence_es TEXT NOT NULL DEFAULT '',
-    created_at  TEXT NOT NULL
+    sentence_es TEXT NOT NULL DEFAULT '',  -- traducción de la frase (al idioma de destino)
+    created_at  TEXT NOT NULL,
+    UNIQUE (lang, key)
 )
 """
-_COLUMNS = "id, key, word, surface, meaning, extra, sentence, sentence_es, created_at"
+_COLUMNS = "id, key, lang, word, surface, reading, meaning, extra, sentence, sentence_es, created_at"
 
 
 @dataclass
@@ -48,6 +52,8 @@ class Card:
     sentence_es: str = ""
     created_at: str = ""
     id: Optional[int] = None
+    lang: str = ""          # idioma del juego; vacío = el idioma activo del almacén al guardar
+    reading: str = ""       # lectura en kana (solo japonés)
 
 
 def _shorten(text: str, limit: int = MAX_DEFINITION) -> str:
@@ -90,7 +96,7 @@ def extra_text(result) -> str:
     return ""
 
 
-def build_card(word: str, key: str, result, sentence: str) -> Card:
+def build_card(word: str, key: str, result, sentence: str, lang: str = "") -> Card:
     """Tarjeta para `word` (la palabra del texto) con su significado y su frase.
 
     `result` es el LookupResult del diccionario, o None si la palabra no tiene entrada
@@ -98,26 +104,52 @@ def build_card(word: str, key: str, result, sentence: str) -> Card:
     traducción automática de la palabra.
     """
     if result is None:
-        return Card(key=key, word=word, surface=word, sentence=sentence)
+        return Card(key=key, word=word, surface=word, sentence=sentence, lang=lang)
+    reading = next((e.reading for e in result.entries if e.reading), "")
     return Card(key=key, word=key, surface=result.query, meaning=meaning_text(result),
-                extra=extra_text(result), sentence=sentence)
+                extra=extra_text(result), sentence=sentence, lang=lang, reading=reading)
 
 
 class CardStore:
     """Base de datos de tarjetas. Úsala solo desde el hilo de la interfaz."""
 
-    def __init__(self, path: Path = DB_PATH):
+    def __init__(self, path: Path = DB_PATH, lang: str = "en"):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         self._con = sqlite3.connect(path)
+        self._migrate()
         self._con.execute(_SCHEMA)
         self._con.commit()
-        self._keys = {row[0] for row in self._con.execute("SELECT key FROM cards")}
+        self.lang = lang
+        self._keys = self._load_keys()
+
+    def _migrate(self):
+        """Bases de las fases anteriores: sin columna de idioma y con la clave única a secas.
+        Se reconstruye la tabla (todas las tarjetas viejas pasan a inglés) sin perder nada."""
+        cols = [r[1] for r in self._con.execute("PRAGMA table_info(cards)")]
+        if not cols or "lang" in cols:
+            return
+        self._con.execute("ALTER TABLE cards RENAME TO cards_old")
+        self._con.execute(_SCHEMA)
+        self._con.execute(
+            "INSERT INTO cards (id, key, lang, word, surface, reading, meaning, extra, sentence, "
+            "sentence_es, created_at) SELECT id, key, 'en', word, surface, '', meaning, extra, "
+            "sentence, sentence_es, created_at FROM cards_old")
+        self._con.execute("DROP TABLE cards_old")
+        self._con.commit()
+
+    def _load_keys(self) -> set:
+        return {row[0] for row in self._con.execute("SELECT key FROM cards WHERE lang=?", (self.lang,))}
+
+    def set_language(self, lang: str):
+        """Cambia el idioma con el que trabaja el almacén (claves, conteo, lista y nuevas tarjetas)."""
+        self.lang = lang
+        self._keys = self._load_keys()
 
     # --- consulta ---
     @property
     def keys(self) -> set:
-        """Claves de todas las tarjetas guardadas (no la modifiques)."""
+        """Claves de las tarjetas guardadas en el idioma activo (no la modifiques)."""
         return self._keys
 
     def __len__(self) -> int:
@@ -126,28 +158,36 @@ class CardStore:
     def has(self, key: str) -> bool:
         return key in self._keys
 
+    def count(self, lang: str) -> int:
+        return self._con.execute("SELECT COUNT(*) FROM cards WHERE lang=?", (lang,)).fetchone()[0]
+
     def get(self, card_id: int) -> Optional[Card]:
         row = self._con.execute(f"SELECT {_COLUMNS} FROM cards WHERE id=?", (card_id,)).fetchone()
         return self._card(row) if row else None
 
-    def all(self) -> list:
-        rows = self._con.execute(f"SELECT {_COLUMNS} FROM cards ORDER BY id").fetchall()
+    def all(self, lang: Optional[str] = None) -> list:
+        """Tarjetas del idioma `lang` (por defecto el activo), de la más vieja a la más nueva."""
+        rows = self._con.execute(f"SELECT {_COLUMNS} FROM cards WHERE lang=? ORDER BY id",
+                                 (lang or self.lang,)).fetchall()
         return [self._card(r) for r in rows]
 
     # --- cambios ---
     def add(self, card: Card) -> Optional[Card]:
-        """Guarda la tarjeta. Devuelve None, sin tocar nada, si ya existía esa clave."""
-        if card.key in self._keys:
+        """Guarda la tarjeta en su idioma (por defecto, el activo). Devuelve None, sin tocar nada,
+        si ya existía esa clave en ese idioma."""
+        card.lang = card.lang or self.lang
+        if self._con.execute("SELECT 1 FROM cards WHERE lang=? AND key=?", (card.lang, card.key)).fetchone():
             return None
         card.created_at = card.created_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cur = self._con.execute(
-            "INSERT INTO cards (key, word, surface, meaning, extra, sentence, sentence_es, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            (card.key, card.word, card.surface, card.meaning, card.extra,
+            "INSERT INTO cards (key, lang, word, surface, reading, meaning, extra, sentence, "
+            "sentence_es, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (card.key, card.lang, card.word, card.surface, card.reading, card.meaning, card.extra,
              card.sentence, card.sentence_es, card.created_at))
         self._con.commit()
         card.id = cur.lastrowid
-        self._keys.add(card.key)
+        if card.lang == self.lang:
+            self._keys.add(card.key)
         return card
 
     def update(self, card_id: int, **fields):
@@ -164,12 +204,12 @@ class CardStore:
         ids = list(ids)
         self._con.executemany("DELETE FROM cards WHERE id=?", [(i,) for i in ids])
         self._con.commit()
-        self._keys = {row[0] for row in self._con.execute("SELECT key FROM cards")}
+        self._keys = self._load_keys()
 
     def close(self):
         self._con.close()
 
     @staticmethod
     def _card(row) -> Card:
-        return Card(id=row[0], key=row[1], word=row[2], surface=row[3], meaning=row[4],
-                    extra=row[5], sentence=row[6], sentence_es=row[7], created_at=row[8])
+        return Card(id=row[0], key=row[1], lang=row[2], word=row[3], surface=row[4], reading=row[5],
+                    meaning=row[6], extra=row[7], sentence=row[8], sentence_es=row[9], created_at=row[10])
