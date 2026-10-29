@@ -34,8 +34,8 @@ PAD_X, PAD_Y = 3, 2                       # cuánto sobresale el parche del cuad
 RING = 3                                  # grosor (px) del borde que se mira para sacar el color de fondo
 HINT_SELECT = "Arrastra para elegir la región · Esc cancela"
 HINT_READING = "Leyendo el texto…"
-HINT_TEXT = "Clic IZQ - Guardar Palabra · T - Traducción · O - Original · M unir líneas · Clic DER - otra región · Esc - Cerrar"
-HINT_EMPTY = "No se detectó texto · Clic der - otra región · Esc - Cerrar"
+HINT_TEXT = "Clic: guardar palabra · T traducción · O original · M unir líneas · Clic der.: otra región · Esc"
+HINT_EMPTY = "No se detectó texto · Clic derecho: otra región · Esc cierra"
 
 
 @dataclass
@@ -121,6 +121,7 @@ def uniform_font(items: list, base: QFont) -> QFont:
 class CaptureOverlay(QWidget):
     region_selected = pyqtSignal(object)           # recorte (BGR) para el OCR
     word_hovered = pyqtSignal(str, str, QPoint)    # palabra, compuesto, posición global
+    word_context = pyqtSignal(str, int)            # justo antes: línea de texto y posición de la palabra en ella
     hover_ended = pyqtSignal()
     wheel_moved = pyqtSignal(int)                  # rueda del mouse: desplaza la ventanita del diccionario
     word_clicked = pyqtSignal(str, str, int)       # palabra, compuesto, posición en `self.text`
@@ -152,6 +153,7 @@ class CaptureOverlay(QWidget):
         self._panel = None                         # (QRectF, QTextDocument) del panel de traducción
         self._hover_key = None                     # (línea, palabra) bajo el mouse
         self._hover_pending = None
+        self._hover_ctx = None                     # (línea, posición) de la palabra bajo el mouse
         self._hover_shown = False
         self._press = None
 
@@ -381,12 +383,15 @@ class CaptureOverlay(QWidget):
     def _emit_hover(self):
         if self._hover_pending:
             self._hover_shown = True
+            if self._hover_ctx:
+                self.word_context.emit(*self._hover_ctx)
             self.word_hovered.emit(*self._hover_pending)
 
     def _end_hover(self):
         self._hover_timer.stop()
         self._hover_key = None
         self._hover_pending = None
+        self._hover_ctx = None
         if self._hover_shown:
             self._hover_shown = False
             self.hover_ended.emit()
@@ -421,6 +426,7 @@ class CaptureOverlay(QWidget):
             line = self._lines[hit[0]]
             w = line.words[hit[1]]
             self._hover_pending = (w.word, w.compound, e.globalPos())
+            self._hover_ctx = (line.text, w.start)
             self._hover_timer.start()
         self.setCursor(Qt.PointingHandCursor if hit else Qt.ArrowCursor)
         self.update()

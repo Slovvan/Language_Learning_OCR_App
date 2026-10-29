@@ -9,11 +9,13 @@ Misma interfaz que dictionary.Dictionary, así la ventana, el popup y las tarjet
 La lectura sale del diccionario (ya no hace falta el furigana). Para elegir entre homógrafos
 (は «partícula» / 歯 «diente») se usa la categoría gramatical que dio SudachiPy en el texto.
 """
+import re
 import sqlite3
 from pathlib import Path
 
 from DB.dictionary import Entry, LookupResult, Sense
-from DB.ja_nlp import normalize, tokenizer
+from DB.ja_nlp import normalize, to_hiragana, tokenizer
+from DB.levels_ja import Levels
 
 DB_PATH = Path(__file__).resolve().parent / "data" / "dictionary_ja.db"
 
@@ -62,12 +64,57 @@ def _score(tags: str, prefixes: tuple) -> int:
     return 0
 
 
+_SMALL = str.maketrans("ぁぃぅぇぉゎ", "あいうえおわ")
+_ROWS = {"あ": "かがさざただなはばぱまやらわ", "い": "きぎしじちぢにひびぴみり", "う": "くぐすずつづぬふぶぷむゆる",
+         "え": "けげせぜてでねへべぺめれ", "お": "こごそぞとどのほぼぽもよろを"}
+_ROW_OF = {c: vowel for vowel, chars in _ROWS.items() for c in chars}
+_E_ROW_TO_I = {}          # け -> [か, き, こ, く]: filas que pueden acabar en «～い» y cambiar a «～え»
+for _e in _ROWS["え"]:
+    _E_ROW_TO_I[_e] = []
+for _i, _e in enumerate(_ROWS["え"]):
+    for _v in ("あ", "い", "う", "お"):
+        _E_ROW_TO_I[_e].append(_ROWS[_v][_i] if _i < len(_ROWS[_v]) else "")
+_VOWEL_OF_SMALL_Y = {"ゃ": "あ", "ゅ": "う", "ょ": "お"}
+
+
+def _variants(text: str) -> list:
+    """Formas más corrientes de una escritura coloquial: ぎゃー -> ぎゃあ, ふぅ -> ふう, ピタッ -> ぴたっと,
+    ばーか -> ばか, すげえ -> すごい. Solo se prueban cuando la palabra tal cual no está."""
+    out = []
+    h = to_hiragana(text)
+    small = h.translate(_SMALL)
+    if small != h:
+        out.append(small)
+    if "ー" in h:
+        # ー detrás de una kana: la vocal que alarga (ぎゃー -> ぎゃあ), o se quita (ばーか -> ばか)
+        longer = []
+        for i, c in enumerate(h):
+            if c == "ー" and i:
+                p = h[i - 1]
+                vowel = _VOWEL_OF_SMALL_Y.get(p) or _ROW_OF.get(p) or (p if p in "あいうえお" else "")
+                longer.append(vowel or "")
+            else:
+                longer.append(c)
+        out.append("".join(longer))
+        out.append(h.replace("ー", ""))
+    if h.endswith(("っ", "ッ")):
+        out += [h[:-1] + "っと", h[:-1] + "り"]
+    n = small
+    if len(n) >= 2 and n.endswith("え") and n[-2] in _E_ROW_TO_I:
+        cands = [c for c in _E_ROW_TO_I[n[-2]] if c]
+        if n[-2] == "げ":                      # すげえ -> すごい antes que すがい
+            cands.sort(key=lambda c: c != "ご")
+        out += [n[:-2] + c + "い" for c in cands]
+    return [v for v in dict.fromkeys(out) if v and v != text]
+
+
 class JaDictionary:
     build_hint = "build_dictionary_ja.py"      # script que lo genera (lo muestra el popup si falta)
 
-    def __init__(self, path: Path = DB_PATH):
+    def __init__(self, path: Path = DB_PATH, levels_path=None):
         self.path = Path(path).resolve()
         self._con = None
+        self.levels = Levels(levels_path) if levels_path else Levels()   # nivel JLPT y frecuencias (opcional)
         if self.path.exists():
             self._con = sqlite3.connect(f"{self.path.as_uri()}?mode=ro", uri=True)
 
@@ -76,6 +123,7 @@ class JaDictionary:
         return self._con is not None
 
     def close(self):
+        self.levels.close()
         if self._con is not None:
             self._con.close()
             self._con = None
@@ -99,9 +147,42 @@ class JaDictionary:
             return self._result(word, *fallback, full)
         return None
 
+    # --- reparación de la ー que el OCR a veces se come (ロド -> ロード) ---
+    _KATA_RUN = re.compile("[ァ-ヶー]{2,}")
+    _NO_LONG = frozenset("ンッー・ャュョァィゥェォヮヶヵ")      # tras estos no se alarga la vocal
+
+    def has_form(self, text: str) -> bool:
+        return self.available and self._con.execute(
+            "SELECT 1 FROM form WHERE text=? LIMIT 1", (text,)).fetchone() is not None
+
+    def repair_katakana(self, text: str) -> str:
+        """Si una palabra en katakana no existe en JMdict pero con UNA «ー» más sí (y solo de una
+        manera), usa esa: «ロド完了» -> «ロード完了», «ポション» -> «ポーション». Los nombres propios
+        que no se parecen a ninguna palabra se dejan tal cual."""
+        if not self.available:
+            return text
+
+        def fix(m):
+            run = m.group()
+            if self.has_form(run):
+                return run
+            found = []
+            for i in range(1, len(run) + 1):
+                if run[i - 1] in self._NO_LONG or (i < len(run) and run[i] == "ー"):
+                    continue
+                cand = run[:i] + "ー" + run[i:]
+                if self.has_form(cand) and cand not in found:
+                    found.append(cand)
+            return found[0] if len(found) == 1 else run
+        return self._KATA_RUN.sub(fix, text)
+
     def key_for(self, word: str, compound: str = "") -> str:
         """Clave de la tarjeta: la forma de diccionario (勝った y 勝つ son la misma tarjeta)."""
-        return (compound or word).strip()
+        text = (compound or word).strip()
+        h = to_hiragana(text)
+        if h != text and self.available and not self.has_form(text) and self.has_form(h):
+            return h                                    # キミ y きみ son la misma tarjeta
+        return text
 
     # --- interno ---
     @staticmethod
@@ -110,6 +191,17 @@ class JaDictionary:
         for t in (compound, word, normalize(compound), normalize(word)):
             if t and t not in out:
                 out.append(t)
+        # Katakana de énfasis o de estilo (キミ, ワケ, プツプツ): JMdict solo los trae en hiragana o
+        # con kanji. Se prueban al final, así las palabras que sí existen en katakana no cambian.
+        for t in list(out):
+            h = to_hiragana(t)
+            if h != t and h not in out:
+                out.append(h)
+        # Variantes de escritura coloquial (alargamientos, ッ final, vocales pequeñas, ～ええ por ～い).
+        for t in list(out):
+            for v in _variants(t):
+                if v not in out:
+                    out.append(v)
         return out
 
     def _rows(self, text: str, hint: tuple) -> list:
@@ -149,5 +241,6 @@ class JaDictionary:
                     note = "kanji: " + ", ".join(kanji.split("|")[:2])
             else:
                 read = reading                          # buscado por kanji: la lectura va al lado
-            entries.append(Entry(lemma=text, senses=senses, total=nsense, note=note, reading=read))
+            entries.append(Entry(lemma=text, senses=senses, total=nsense, note=note, reading=read,
+                                 tags=self.levels.tags(text, reading)))
         return LookupResult(query=word, entries=entries)

@@ -21,6 +21,8 @@ import html
 import re
 from pathlib import Path
 
+from DB.levels_ja import fine_band
+
 TAG = "OCR_Translator"
 FIELDS = ["Word", "Meaning", "Sentence", "SentenceTranslation", "Extra"]      # inglés (compatibilidad)
 
@@ -113,6 +115,27 @@ def card_fields(card, lang=None) -> list:
     return [values[name] for name in prof["fields"]]
 
 
+def anki_tags(card) -> list:
+    """Etiquetas de la nota: la general y, si hay datos, el nivel y las frecuencias
+    («JLPT N3» -> JLPT::N3, «Anime #1 234» -> freq::anime::top_1500)."""
+    out = [TAG]
+    for part in (getattr(card, "tags", "") or "").split(" · "):
+        part = part.strip()
+        if part.startswith("JLPT "):
+            out.append("JLPT::" + part[5:].strip())
+        elif " #" in part:                                  # «Anime #1 234»: puesto exacto -> banda fina
+            label, rank = part.split(" #", 1)
+            digits = re.sub(r"\D", "", rank)
+            if digits:
+                out.append(f"freq::{re.sub(r'[ ]+', '_', label.strip().lower())}::{fine_band(int(digits))}")
+        elif ":" in part:                                   # formato anterior: «Anime: top 5 000»
+            label, rank = part.split(":", 1)
+            digits = re.sub(r"\D", "", rank)
+            rank = ("mas_de_" if "más" in rank else "top_") + digits
+            out.append(f"freq::{re.sub(r'[ ]+', '_', label.strip().lower())}::{rank}")
+    return out
+
+
 def note_guid(card, lang=None) -> str:
     """Identificador estable de la nota (depende solo del idioma y la clave de la tarjeta)."""
     prefix = profile_for([card], lang)["guid_prefix"]
@@ -130,7 +153,7 @@ def export_tsv(cards, path, lang=None) -> int:
         f.write(f"#separator:tab\n#html:true\n#tags column:{len(prof['fields']) + 1}\n")
         writer = csv.writer(f, delimiter="\t", quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
         for card in cards:
-            writer.writerow(card_fields(card, lang) + [TAG])
+            writer.writerow(card_fields(card, lang) + [" ".join(anki_tags(card))])
     return len(cards)
 
 
@@ -149,7 +172,7 @@ def export_apkg(cards, path, lang=None) -> int:
     deck = genanki.Deck(prof["deck_id"], prof["deck_name"])
     for card in cards:
         deck.add_note(genanki.Note(model=model, fields=card_fields(card, lang),
-                                   tags=[TAG], guid=note_guid(card, lang)))
+                                   tags=anki_tags(card), guid=note_guid(card, lang)))
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     genanki.Package(deck).write_to_file(str(path))

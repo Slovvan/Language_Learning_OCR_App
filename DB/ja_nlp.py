@@ -10,6 +10,7 @@ pantalla. En «compuesto» va la forma de diccionario cuando difiere de lo escri
 diccionario y las tarjetas reciben el lema sin cambiar ninguna otra interfaz.
 Si SudachiPy no está instalado, `available` es False y no se encuentra ninguna palabra.
 """
+import re
 import functools
 import unicodedata
 from dataclasses import dataclass
@@ -22,7 +23,7 @@ except Exception:  # noqa: BLE001  (no instalado o sin diccionario)
 
 SKIP_POS = frozenset({"補助記号", "空白", "記号"})          # signos y espacios: no son palabras
 
-# Categoría de Sudachi -> prefijos de las categorías de JMdict que le corresponden. Sirve para
+#Categoría de Sudachi -> prefijos de las categorías de JMdict que le corresponden. Sirve para
 # elegir la entrada correcta entre homógrafos (は «partícula» y 歯 «diente» se leen igual).
 POS_TO_JMDICT = {
     "助詞": ("prt", "conj"),
@@ -102,18 +103,56 @@ class JaTokenizer:
             return ()
 
     def _tokenize(self, text: str) -> tuple:
+        morphemes = list(self._get().tokenize(text, self._mode))
+        pieces = self._kana_runs(text, morphemes)          # [(inicio, fin, superficie, lema, lectura, categoría, partes)]
         out = []
-        for m in self._get().tokenize(text, self._mode):
-            pos = m.part_of_speech()[0]
-            surface = m.surface()
-            lemma = m.dictionary_form()
-            out.append(Token(m.begin(), m.end(), surface, lemma if lemma != surface else "",
-                             m.reading_form(), pos))
-            prefixes = _hint_for(m.part_of_speech())
+        for begin, end, surface, lemma, reading, pos, parts in pieces:
+            out.append(Token(begin, end, surface, lemma if lemma != surface else "", reading, pos))
+            prefixes = _hint_for(parts)
             if prefixes:
                 key = (surface, lemma)
                 self._hints[key] = tuple(dict.fromkeys(self._hints.get(key, ()) + prefixes))
         return tuple(out)
+
+    def _kana_runs(self, text: str, morphemes: list) -> list:
+        """Piezas de `text`. Un tramo en katakana que Sudachi no reconoce (ヤメテ, ハヤク, ナンデ: japonés
+        corriente escrito en katakana) se vuelve a analizar como hiragana; las piezas conservan el
+        katakana escrito pero llevan la forma de diccionario y la categoría del hiragana. Si el análisis
+        en hiragana sale raro (palabras de 1 letra sueltas) se deja como estaba."""
+        runs = {(m.start(), m.end()) for m in _KATA_RUN.finditer(text)}
+        out, i = [], 0
+        while i < len(morphemes):
+            m = morphemes[i]
+            run = next(((a, b) for a, b in runs if a <= m.begin() < b), None)
+            if run is not None and m.begin() == run[0]:
+                j = i
+                while j < len(morphemes) and morphemes[j].end() <= run[1]:
+                    j += 1
+                group = morphemes[i:j]
+                if group and group[-1].end() == run[1] and any(g.is_oov() for g in group):
+                    pieces = self._as_hiragana(text, run)
+                    if pieces:
+                        out.extend(pieces)
+                        i = j
+                        continue
+            out.append((m.begin(), m.end(), m.surface(), m.dictionary_form(), m.reading_form(),
+                        m.part_of_speech()[0], m.part_of_speech()))
+            i += 1
+        return out
+
+    def _as_hiragana(self, text: str, run: tuple):
+        a, b = run
+        hira = to_hiragana(text[a:b])
+        ms = list(self._get().tokenize(hira, self._mode))
+        for m in ms:
+            if m.is_oov() or (m.end() - m.begin() == 1 and m.part_of_speech()[0] in _LONE_BAD):
+                return None                                   # análisis dudoso: no se toca
+        if len(ms) > 1 and not any(m.part_of_speech()[0] in ("助詞", "助動詞") for m in ms):
+            return None                                       # varias palabras sueltas = nombre inventado (ザルガス)
+        if any(x.end() - x.begin() == 1 and y.end() - y.begin() == 1 for x, y in zip(ms, ms[1:])):
+            return None                                       # migas de una letra seguidas: nombre inventado
+        return [(a + m.begin(), a + m.end(), text[a + m.begin():a + m.end()], m.dictionary_form(),
+                 m.reading_form(), m.part_of_speech()[0], m.part_of_speech()) for m in ms]
 
     def pos_hint(self, word: str, lemma: str = "") -> tuple:
         """Prefijos de categoría JMdict de la última vez que se vio esta palabra en un texto."""
@@ -145,6 +184,11 @@ def _tokens(owner: JaTokenizer, text: str) -> tuple:
 
 def to_hiragana(text: str) -> str:
     return "".join(chr(ord(c) - 0x60) if "ァ" <= c <= "ヶ" else c for c in text)
+
+
+_KATA_RUN = re.compile("[ァ-ヶー]{2,}")
+# Una palabra de una sola letra de estas categorías, suelta, delata un análisis en hiragana inventado.
+_LONE_BAD = frozenset({"感動詞", "名詞", "接尾辞", "副詞", "形状詞", "代名詞", "接頭辞", "連体詞", "接続詞"})
 
 
 def normalize(text: str) -> str:

@@ -5,6 +5,11 @@ así las tres se comportan igual.
 """
 from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 
+from dataclasses import replace
+
+import Translator.languages as languages
+import DB.ja_grammar as ja_grammar
+from DB.dictionary import LookupResult
 from Cards.cards import build_card
 import Translator.languages as languages
 from UI.word_popup import iter_words
@@ -25,6 +30,7 @@ class WordService(QObject):
         self.store = store
         self.popup = popup
         self.glossary = glossary                  # UserGlossary: palabras sin significado, para rellenar
+        self._ctx = None                          # (texto, posición) de la palabra que se va a mostrar
         # El mouse puede ir de la palabra a la ventanita para desplazarla: al dejar la palabra,
         # la ventanita espera un momento antes de ocultarse (y se queda si el mouse entra en ella).
         self._hide_timer = QTimer(self)
@@ -102,14 +108,32 @@ class WordService(QObject):
         return bool(changes)
 
     # --- ventanita del diccionario ---
+    def set_context(self, text: str, start: int):
+        """La línea y la posición de la palabra que viene en el siguiente hover (gramática)."""
+        self._ctx = (text, start)
+
+    def _grammar(self) -> list:
+        """Formas gramaticales (ている, なきゃ...) de la palabra bajo el mouse; solo en japonés."""
+        ctx, self._ctx = self._ctx, None
+        if ctx is None or languages.active().code != "ja":
+            return []
+        try:
+            return ja_grammar.grammar_entries(*ctx)
+        except Exception:  # noqa: BLE001  (la gramática es un extra: nunca debe romper el diccionario)
+            return []
+
     def hover(self, word: str, compound: str, global_pos):
         self._hide_timer.stop()
+        grammar = self._grammar()
         if not self.dictionary.available:
             script = getattr(self.dictionary, "build_hint", "build_dictionary.py")
             self.popup.show_message(f"Diccionario no encontrado: ejecuta {script}", global_pos)
             return
         saved = self.is_saved(word, compound)
         result = self.dictionary.lookup(word, compound, full=True)
+        if grammar:                                   # la gramática va arriba; el diccionario no se toca
+            result = replace(result, entries=grammar + result.entries) if result is not None \
+                else LookupResult(word, grammar)
         if result is None:
             if self.glossary is not None and self._is_pending(word, compound):
                 text = f"«{word}»: sin entrada · ya está en Pendientes (ábrelos para escribir el significado)"

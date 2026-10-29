@@ -61,6 +61,7 @@ class Entry:
     kind: str = "word"                         # "word" (WordNet) o "function" (glosario)
     note: str = ""                             # p. ej. "pasado, con I / he / she / it"
     reading: str = ""                          # lectura (japonés: «あける»); vacía en inglés
+    tags: list = field(default_factory=list)   # etiquetas de nivel y frecuencia (japonés): «JLPT N3»...
 
 
 @dataclass

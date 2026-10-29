@@ -90,6 +90,7 @@ class LogWindow(QWidget):
         self.btn_txt.clicked.connect(lambda: self.export("txt"))
         self.btn_copy_src.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.original.toPlainText()))
         self.btn_copy_dst.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.translation.toPlainText()))
+        self.original.word_context.connect(self.words.set_context)
         self.original.word_hovered.connect(self.words.hover)
         self.original.hover_ended.connect(self.words.hover_left)
         self.original.wheel_moved.connect(self.words.scroll_popup)

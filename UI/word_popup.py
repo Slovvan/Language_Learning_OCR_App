@@ -1,13 +1,15 @@
 """Cuadro de texto que detecta la palabra bajo el mouse (hover y clic) y ventanita con el diccionario."""
 import html
 import re
+from urllib.parse import quote, unquote
 
-from PyQt5.QtCore import QEvent, QPoint, QPointF, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QTextCursor, QTextDocument
+from PyQt5.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer, QUrl, pyqtSignal
+from PyQt5.QtGui import (QColor, QFont, QFontMetrics, QImage, QPainter, QPen, QTextCursor, QTextDocument)
 from PyQt5.QtWidgets import QApplication, QFrame, QTextBrowser, QTextEdit, QVBoxLayout
 
 import Translator.languages as languages
 from DB.dictionary import POS_LABEL
+from DB.levels_ja import chip as chip_for
 
 _L = r"[^\W\d_]"   # una letra (Unicode)
 _WORD_RE = re.compile(rf"{_L}+(?:['’]{_L}+)*")           # palabra, con apóstrofos: don't
@@ -21,6 +23,10 @@ MEANING_PX = 17        # traducción al español (inglés) o significado (japon�
 BODY_PX = 13           # definiciones en inglés, notas, ejemplos
 MARK_COLOR = QColor(46, 160, 67, 80)    # fondo de las palabras ya guardadas
 PENDING_COLOR = QColor(235, 140, 30, 90)   # fondo de las palabras sin significado (pendientes)
+CHIP_H = 22            # alto (px) de cada etiqueta de nivel o frecuencia
+CHIP_GAP = 6           # separación vertical entre filas de etiquetas (va dentro de la imagen, transparente)
+CHIP_W = 104           # ancho de cada etiqueta
+CHIP_COL = 236         # ancho del bloque de etiquetas, a la derecha de la palabra (dos por fila)
 SAVED_BADGE = "<p style='margin:0 0 4px 0; color:#1b6b2f'><b>✓ Ya guardada en tu lista</b></p>"
 
 
@@ -61,12 +67,90 @@ def iter_words(text: str):
     return languages.active().iter_words(text)
 
 
+def chip_width(text: str) -> int:
+    """Ancho (px) de las etiquetas: todas iguales, como las de tipo de Pokémon."""
+    return CHIP_W
+
+
+def _chips_html(tags) -> str:
+    """Etiquetas como imágenes «píldora» (se dibujan en _PillBrowser.loadResource), en filas de dos
+    con aire entre ellas."""
+    out = []
+    for tag in tags or []:
+        c = chip_for(tag)
+        if c is None:
+            continue
+        text, color = c
+        src = "pill:" + quote(f"{color}|{text}", safe="")
+        out.append(f"<img src='{src}' width='{chip_width(text)}' height='{CHIP_H + CHIP_GAP}'>")
+    return " &nbsp;".join(out)
+
+
+_PILLS = {}
+
+
+def pill_image(text: str, color: str, width: int, height: int = CHIP_H, gap: int = CHIP_GAP) -> QImage:
+    """Píldora de color con el texto en blanco, al doble de resolución (se ve nítida al escalarla).
+    Debajo lleva `gap` px transparentes: así las filas de etiquetas no quedan pegadas."""
+    key = (text, color, width, height, gap)
+    if key in _PILLS:
+        return _PILLS[key]
+    k = 2
+    img = QImage(width * k, (height + gap) * k, QImage.Format_ARGB32)
+    img.fill(Qt.transparent)
+    p = QPainter(img)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.TextAntialiasing)
+    base = QColor(color)
+    rect = QRectF(1, 1, width * k - 2, height * k - 2)
+    p.setBrush(base)
+    p.setPen(QPen(base.darker(125), 2))
+    p.drawRoundedRect(rect, rect.height() / 2, rect.height() / 2)
+    font = QFont()
+    font.setBold(True)
+    size = int(height * k * 0.52)
+    font.setPixelSize(size)
+    while size > 8 and QFontMetrics(font).horizontalAdvance(text) > rect.width() - 14 * k:
+        size -= 1                                     # texto largo: se achica para caber
+        font.setPixelSize(size)
+    p.setFont(font)
+    p.setPen(QColor("white"))
+    p.drawText(rect, Qt.AlignCenter, text)
+    p.end()
+    _PILLS[key] = img
+    return img
+
+
+class _PillBrowser(QTextBrowser):
+    """QTextBrowser que dibuja las imágenes «pill:…» del HTML (etiquetas de nivel y frecuencia)."""
+
+    def loadResource(self, rtype, url):
+        if url.scheme() == "pill":
+            color, _sep, text = unquote(bytes(url.toEncoded()).decode("ascii")[5:]).partition("|")
+            return pill_image(text, color, chip_width(text))
+        return super().loadResource(rtype, url)
+
+
 def render_html(result, saved: bool = False) -> str:
     """HTML sencillo (subconjunto que entiende QTextDocument) para un LookupResult."""
     esc = html.escape
     parts = [SAVED_BADGE] if saved else []
     previous = None
+    shown = set()                                      # (palabra, etiquetas) que ya se mostraron
     for entry in result.entries:
+        if entry.kind == "grammar":                    # forma gramatical: encabezado discreto, sin numerar
+            parts.append(f"<p style='margin:6px 0 2px 0'><span style='font-size:{READING_PX}px; font-weight:600; "
+                         f"color:#6b3fa0'>{esc(entry.lemma)}</span> <span style='color:#888; font-size:{BODY_PX}px'>"
+                         f"gramática</span></p>")
+            if entry.note:
+                parts.append(f"<p style='margin:0 0 2px 0; color:#888; font-size:{BODY_PX}px'><i>{esc(entry.note)}</i></p>")
+            for s in entry.senses:
+                text = f"<span style='font-size:{MEANING_PX}px'>{esc(s.definition)}</span>"
+                if s.example:
+                    text += f"<br><span style='color:#555; font-size:{BODY_PX}px'><i>{esc(s.example)}</i></span>"
+                parts.append(f"<p style='margin:0 0 8px 0'>{text}</p>")
+            previous = entry
+            continue
         if previous is not None and previous.kind == "function" and previous.lemma == entry.lemma:
             head = f"<span style='color:#888; font-size:{BODY_PX}px'>{esc(entry.lemma)} — otros significados</span>"
         else:
@@ -77,7 +161,16 @@ def render_html(result, saved: bool = False) -> str:
             if entry.lemma.lower() != result.query.lower():
                 head += f" <span style='color:#888; font-size:{BODY_PX}px'>← {esc(result.query)}</span>"
         previous = entry
-        parts.append(f"<p style='margin:6px 0 3px 0'>{head}</p>")
+        head_html = f"<p style='margin:6px 0 3px 0'>{head}</p>"
+        sig = (entry.lemma, tuple(entry.tags or ()))
+        chips = _chips_html(entry.tags) if sig not in shown else ""     # la misma palabra: etiquetas una vez
+        if chips:
+            shown.add(sig)
+            head_html = ("<table width='100%' cellspacing='0' cellpadding='0'><tr>"
+                         f"<td valign='middle'>{head_html}</td>"
+                         f"<td valign='top' align='right' width='{CHIP_COL}'>{chips}</td></tr></table>")
+        parts.append(head_html)
+
         if entry.note:
             parts.append(f"<p style='margin:0 0 3px 0; color:#888; font-size:{BODY_PX}px'>"
                          f"<i>{esc(entry.note)}</i></p>")
@@ -116,6 +209,9 @@ class HoverTextEdit(QTextEdit):
     """
 
     word_hovered = pyqtSignal(str, str, QPoint)
+    # Justo antes de word_hovered: el texto (línea) donde está la palabra y su posición en él.
+    # Lo usa la capa de gramática japonesa para ver las piezas vecinas.
+    word_context = pyqtSignal(str, int)
     hover_ended = pyqtSignal()
     # Clic sobre una palabra (sin arrastrar): palabra, compuesto y su posición en el texto.
     word_clicked = pyqtSignal(str, str, int)
@@ -132,6 +228,7 @@ class HoverTextEdit(QTextEdit):
         self._timer.timeout.connect(self._emit_pending)
         self._key = None        # (inicio, fin) absolutos de la palabra bajo el mouse
         self._pending = None    # (palabra, compuesto, posición global)
+        self._pending_ctx = None  # (texto de la línea, posición de la palabra en ella)
         self._shown = False     # ¿ya se emitió word_hovered para la palabra actual?
         self._press = None      # dónde se pulsó el botón izquierdo (para distinguir clic de arrastre)
         self.verticalScrollBar().valueChanged.connect(lambda _v: self._end())
@@ -165,17 +262,23 @@ class HoverTextEdit(QTextEdit):
         self._key = key
         if hit:
             self._pending = (hit[1], hit[2], e.globalPos())
+            block = self.document().findBlock(hit[0][0])
+            self._pending_ctx = (block.text(), hit[0][0] - block.position())
             self._timer.start()
 
     def _emit_pending(self):
         if self._pending:
             self._shown = True
+            ctx = getattr(self, "_pending_ctx", None)
+            if ctx:
+                self.word_context.emit(*ctx)
             self.word_hovered.emit(*self._pending)
 
     def _end(self):
         self._timer.stop()
         self._key = None
         self._pending = None
+        self._pending_ctx = None
         if self._shown:
             self._shown = False
             self.hover_ended.emit()
@@ -240,7 +343,7 @@ class WordPopup(QFrame):
         self.setStyleSheet(
             "QFrame#wordPopup { background:#fffdf6; border:1px solid #b9b192; border-radius:6px; }"
             "QTextBrowser { background:transparent; color:#222; border:none; }")
-        self._view = QTextBrowser()
+        self._view = _PillBrowser()
         self._view.setFrameShape(QFrame.NoFrame)
         self._view.setOpenLinks(False)
         self._view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)

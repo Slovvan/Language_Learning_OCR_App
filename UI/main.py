@@ -227,6 +227,7 @@ class MainWindow(QWidget):
         self.btn_glossary.clicked.connect(self.open_glossary)
         self.btn_copy_src.clicked.connect(lambda: self.copy(self.output))
         self.btn_copy_dst.clicked.connect(lambda: self.copy(self.translation))
+        self.output.word_context.connect(self.words.set_context)
         self.output.word_hovered.connect(self.words.hover)
         self.output.hover_ended.connect(self.words.hover_left)
         self.output.wheel_moved.connect(self.words.scroll_popup)
@@ -392,6 +393,7 @@ class MainWindow(QWidget):
         if self.overlay is None:
             self.overlay = CaptureOverlay()
             self.overlay.region_selected.connect(self.on_region)
+            self.overlay.word_context.connect(self.words.set_context)
             self.overlay.word_hovered.connect(self.words.hover)
             self.overlay.hover_ended.connect(self.words.hover_left)
             self.overlay.wheel_moved.connect(self.words.scroll_popup)

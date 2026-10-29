@@ -35,10 +35,11 @@ CREATE TABLE IF NOT EXISTS cards (
     sentence    TEXT NOT NULL DEFAULT '',
     sentence_es TEXT NOT NULL DEFAULT '',  -- traducción de la frase (al idioma de destino)
     created_at  TEXT NOT NULL,
+    tags        TEXT NOT NULL DEFAULT '',  -- nivel JLPT y frecuencias, separadas por « · » (japonés)
     UNIQUE (lang, key)
 )
 """
-_COLUMNS = "id, key, lang, word, surface, reading, meaning, extra, sentence, sentence_es, created_at"
+_COLUMNS = "id, key, lang, word, surface, reading, meaning, extra, sentence, sentence_es, created_at, tags"
 
 
 @dataclass
@@ -54,6 +55,7 @@ class Card:
     id: Optional[int] = None
     lang: str = ""          # idioma del juego; vacío = el idioma activo del almacén al guardar
     reading: str = ""       # lectura en kana (solo japonés)
+    tags: str = ""          # «JLPT N3 · Anime: top 2 000» (solo japonés, si hay datos)
 
 
 def _shorten(text: str, limit: int = MAX_DEFINITION) -> str:
@@ -107,7 +109,8 @@ def build_card(word: str, key: str, result, sentence: str, lang: str = "") -> Ca
         return Card(key=key, word=word, surface=word, sentence=sentence, lang=lang)
     reading = next((e.reading for e in result.entries if e.reading), "")
     return Card(key=key, word=key, surface=result.query, meaning=meaning_text(result),
-                extra=extra_text(result), sentence=sentence, lang=lang, reading=reading)
+                extra=extra_text(result), sentence=sentence, lang=lang, reading=reading,
+                tags=" · ".join(next((e.tags for e in result.entries if e.tags), [])))
 
 
 class CardStore:
@@ -127,6 +130,10 @@ class CardStore:
         """Bases de las fases anteriores: sin columna de idioma y con la clave única a secas.
         Se reconstruye la tabla (todas las tarjetas viejas pasan a inglés) sin perder nada."""
         cols = [r[1] for r in self._con.execute("PRAGMA table_info(cards)")]
+        if cols and "lang" in cols and "tags" not in cols:        # bases de la fase 6 anterior: solo falta «tags»
+            self._con.execute("ALTER TABLE cards ADD COLUMN tags TEXT NOT NULL DEFAULT ''")
+            self._con.commit()
+            return
         if not cols or "lang" in cols:
             return
         self._con.execute("ALTER TABLE cards RENAME TO cards_old")
@@ -181,9 +188,9 @@ class CardStore:
         card.created_at = card.created_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cur = self._con.execute(
             "INSERT INTO cards (key, lang, word, surface, reading, meaning, extra, sentence, "
-            "sentence_es, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "sentence_es, created_at, tags) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (card.key, card.lang, card.word, card.surface, card.reading, card.meaning, card.extra,
-             card.sentence, card.sentence_es, card.created_at))
+             card.sentence, card.sentence_es, card.created_at, card.tags))
         self._con.commit()
         card.id = cur.lastrowid
         if card.lang == self.lang:
@@ -212,4 +219,5 @@ class CardStore:
     @staticmethod
     def _card(row) -> Card:
         return Card(id=row[0], key=row[1], lang=row[2], word=row[3], surface=row[4], reading=row[5],
-                    meaning=row[6], extra=row[7], sentence=row[8], sentence_es=row[9], created_at=row[10])
+                    meaning=row[6], extra=row[7], sentence=row[8], sentence_es=row[9], created_at=row[10],
+                    tags=row[11])
