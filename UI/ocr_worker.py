@@ -23,6 +23,7 @@ class OcrWorker(QObject):
         self._translator_error = ""
         self.language = "en"                  # idioma del juego (clave de languages.PACKS)
         self.ocr_mode = japanese.Mode.NORMAL  # modo de OCR del japonés (normal / solo kana)
+        self._ja_dict = None                  # diccionario propio de este hilo (SQLite no se comparte entre hilos)
 
     def _load_translator(self):
         pack = languages.get_pack(self.language)
@@ -48,6 +49,13 @@ class OcrWorker(QObject):
         if language != self.language or (self._translator is None and not self._translator_error):
             self.language = language
             if self._engine is not None:
+                want = languages.get_pack(language).ocr_lang
+                if getattr(self._engine, "lang", "") != want:      # francés: reconocedor latino
+                    try:
+                        self.status.emit("Cargando OCR...")
+                        self._engine = OcrEngine(want)
+                    except Exception as exc:  # noqa: BLE001
+                        self.failed.emit(f"No se pudo cargar el OCR: {exc}")
                 self._load_translator()
         if self._engine is not None:
             self.ready.emit()
@@ -59,7 +67,7 @@ class OcrWorker(QObject):
         """Se ejecuta al iniciar el hilo: carga OCR y traductor una sola vez."""
         try:
             self.status.emit("Cargando OCR...")
-            self._engine = OcrEngine()
+            self._engine = OcrEngine(languages.get_pack(self.language).ocr_lang)
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(f"No se pudo cargar el OCR: {exc}")
             return
@@ -81,6 +89,7 @@ class OcrWorker(QObject):
             res = self._engine.read(image)
             if languages.get_pack(self.language).has_ocr_modes:   # japonés: filas, furigana, confusiones
                 res = japanese.process(res, self.ocr_mode)
+                res = self._repair_japanese(res)
             self.result.emit(res)
             if res.text.strip():
                 if self._translator is None:
@@ -91,6 +100,20 @@ class OcrWorker(QObject):
             self.failed.emit(f"Error: {exc}")
         finally:
             self.done.emit()
+
+    def _repair_japanese(self, res):
+        """Corrige con JMdict las «ー» que el OCR se comió (ロド -> ロード)."""
+        try:
+            if self._ja_dict is None:
+                from DB.dictionary_ja import JaDictionary
+                self._ja_dict = JaDictionary()
+            lines = [(self._ja_dict.repair_katakana(t), s) for t, s in res.lines]
+        except Exception:  # noqa: BLE001  (sin diccionario: se deja el texto como está)
+            return res
+        if [t for t, _ in lines] == [t for t, _ in res.lines]:
+            return res
+        from dataclasses import replace
+        return replace(res, lines=lines, text="\n".join(t for t, _ in lines))
 
     @pyqtSlot(int, str, str)
     def translate_for_card(self, card_id, sentence, word):

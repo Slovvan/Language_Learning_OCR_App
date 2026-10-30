@@ -112,7 +112,7 @@ class UserGlossary:
             e = self.by_key(lang, k)
             if e is not None and not e.pending:
                 senses = [Sense(pos="glosario propio", definition=line.strip(),
-                                spanish=[line.strip()] if lang == "en" else [])
+                                spanish=[line.strip()] if lang in ("en", "fr") else [])
                           for line in e.meaning.splitlines() if line.strip()]
                 return LookupResult(word, [Entry(lemma=e.word, senses=senses, total=len(senses),
                                                  note="de tu glosario", reading=e.reading)])

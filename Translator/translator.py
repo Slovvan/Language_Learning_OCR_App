@@ -60,6 +60,7 @@ class Translator:
         self._sp_src = None
         self._sp_tgt = None
         self._cache = {}       # frase (espacios normalizados) -> traducción
+        self._rules_ver = self.pack.rules_version()
 
     @property
     def ready(self) -> bool:
@@ -98,7 +99,20 @@ class Translator:
     def _download(self):
         from huggingface_hub import snapshot_download  # import tardío: solo la 1ª vez
         self.model_dir.mkdir(parents=True, exist_ok=True)
-        snapshot_download(repo_id=self.repo_id, local_dir=str(self.model_dir))
+        errors = []
+        for repo in (self.repo_id, *self.pack.model_alts):
+            try:
+                snapshot_download(repo_id=repo, local_dir=str(self.model_dir))
+                if not self._missing_files():
+                    self.repo_id = repo
+                    return
+                errors.append(f"{repo}: faltan {self._missing_files()}")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{repo}: {type(exc).__name__}")
+        if self.pack.model_alts:
+            raise RuntimeError("No se pudo descargar el modelo (" + "; ".join(errors) + "). "
+                               "Conviértelo tú con convert_model_fr.py (ver README_fr.txt).")
+        raise RuntimeError("No se pudo descargar el modelo: " + "; ".join(errors))
 
     def translate(self, text: str, merge_lines: bool = True) -> str:
         if not self.ready:
@@ -139,16 +153,25 @@ class Translator:
         key = " ".join(text.split())
         if not key:
             return ""
+        ver = self.pack.rules_version()
+        if ver != self._rules_ver:             # editaste el glosario: lo traducido antes ya no vale
+            self._rules_ver, self._cache = ver, {}
         if key not in self._cache:
             self._remember(key, self._translate_many([key])[0])
         return self._cache[key]
 
     def _translate_many(self, sentences: list) -> list:
-        batch = [self._sp_src.encode(s, out_type=str) + ["</s>"] for s in sentences]
-        results = self._ct2.translate_batch(
-            batch, beam_size=self.beam_size, max_decoding_length=256
-        )
-        return [self.pack.postprocess(self._sp_tgt.decode(r.hypotheses[0]).strip()) for r in results]
+        out = [self.pack.fixed(s) for s in sentences]          # términos fijos del glosario: sin modelo
+        todo = [i for i, fixed in enumerate(out) if fixed is None]
+        if todo:
+            batch = [self._sp_src.encode(self.pack.preprocess(sentences[i]), out_type=str) + ["</s>"]
+                     for i in todo]
+            results = self._ct2.translate_batch(
+                batch, beam_size=self.beam_size, max_decoding_length=256
+            )
+            for i, r in zip(todo, results):
+                out[i] = self._sp_tgt.decode(r.hypotheses[0]).strip()
+        return [self.pack.postprocess(t) for t in out]
 
     def _remember(self, sentence: str, translation: str):
         key = " ".join(sentence.split())

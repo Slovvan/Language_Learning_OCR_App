@@ -66,6 +66,15 @@ PROFILES = {
         "guid_prefix": "ocr-translator:ja:",
         "word_boundaries": False,                  # en japonés no hay espacios: se busca el texto tal cual
     },
+    "fr": {
+        "fields": ["Word", "Meaning", "Sentence", "SentenceTranslation", "Extra"],
+        "model_id": 1830629471, "deck_id": 1830629472,
+        "model_name": "OCR Translator – Francés", "deck_name": "OCR Translator – Francés",
+        "template": "Palabra → significado",
+        "qfmt": _QFMT, "afmt": '{{FrontSide}}<hr id="answer">' + _TAIL,
+        "guid_prefix": "ocr-translator:fr:",
+        "word_boundaries": True,
+    },
 }
 CSS = _BASE_CSS
 # Compatibilidad con la versión anterior (solo inglés)

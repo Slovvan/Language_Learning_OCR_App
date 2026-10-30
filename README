@@ -4,6 +4,7 @@
 "Etapa 4" "Click en palabras nuevas para exportar toda su informacíon a Anki"
 "Etapa 5" "OCR Inmersivo(Pausa el juego y duplica el texto sobre pantalla usnado el OCR)" error de furigana
 "Etapa 6" "Implementación de Japones oon diccionario (ejecutar build_dictionary_ja antes)"
+"Etapa 7" "OCR con detección de Latin y Frances con Diccionario agregado"
 
 Principal:
 EN - ES (hecho)

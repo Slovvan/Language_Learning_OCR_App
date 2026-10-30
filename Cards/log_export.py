@@ -9,7 +9,7 @@ import csv
 from pathlib import Path
 
 HEADER = ["Fecha", "Idioma", "Original", "Traducción", "Líneas unidas", "Confianza OCR"]
-LANG_NAME = {"en": "inglés", "ja": "japonés"}
+LANG_NAME = {"en": "inglés", "ja": "japonés", "fr": "francés"}
 
 
 def _lang(entry) -> str:

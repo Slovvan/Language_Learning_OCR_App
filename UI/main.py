@@ -20,6 +20,7 @@ from PyQt5.QtWidgets import (QApplication, QCheckBox, QComboBox, QHBoxLayout, QL
 
 from DB.dictionary import Dictionary
 from DB.dictionary_ja import JaDictionary
+from DB.dictionary_fr import FrDictionary
 from DB.ja_nlp import tokenizer as ja_tokenizer
 from DB.phrase_log import PhraseLog
 from DB.glossary import GlossaryDictionary, UserGlossary
@@ -57,6 +58,14 @@ def make_icon() -> QIcon:
     p.drawText(pix.rect(), Qt.AlignCenter, "Aあ")
     p.end()
     return QIcon(pix)
+
+
+def _has_simplemma() -> bool:
+    try:
+        import simplemma  # noqa: F401
+        return True
+    except ImportError:
+        return False
 
 
 class HotkeyBridge(QObject):
@@ -111,11 +120,13 @@ class MainWindow(QWidget):
         # --- diccionario local, tarjetas, registro y ventanita emergente ---
         self.dictionary = Dictionary()
         self.dictionary_ja = JaDictionary()
+        self.dictionary_fr = FrDictionary()
         self.store = CardStore(lang=lang)       # cada idioma tiene su lista de palabras...
         self.log = PhraseLog(lang=lang)         # ...y su registro de frases
         self.glossary = UserGlossary()          # palabras sin significado (pendientes) y las que rellenas tú
         self._dicts = {"en": GlossaryDictionary(self.dictionary, self.glossary, "en"),
-                       "ja": GlossaryDictionary(self.dictionary_ja, self.glossary, "ja")}
+                       "ja": GlossaryDictionary(self.dictionary_ja, self.glossary, "ja"),
+                       "fr": GlossaryDictionary(self.dictionary_fr, self.glossary, "fr")}
         self.popup = WordPopup()
         self.words = WordService(self._dictionary_for(lang), self.store, self.popup, self, self.glossary)
         self.words.saved_changed.connect(self._cards_changed)
@@ -257,6 +268,14 @@ class MainWindow(QWidget):
             self.dict_note.setText("⚠ Diccionario no encontrado: ejecuta build_dictionary.py para ver "
                                    "significados al pasar el mouse sobre una palabra.")
             self.dict_note.setVisible(not self.dictionary.available)
+        elif pack.code == "fr":
+            if not self.dictionary_fr.available:
+                self.dict_note.setText("⚠ Diccionario francés no encontrado: ejecuta build_dictionary_fr.py "
+                                       "para ver significados al pasar el mouse sobre una palabra.")
+            else:
+                self.dict_note.setText("⚠ Falta «simplemma» (pip install simplemma): sin él solo se reconocen "
+                                       "las formas exactas (no «chevaux» → «cheval»).")
+            self.dict_note.setVisible(not self.dictionary_fr.available or not _has_simplemma())
         else:
             if not ja_tokenizer.available:
                 self.dict_note.setText("⚠ Falta SudachiPy: ejecuta «pip install sudachipy sudachidict_core» "
@@ -492,6 +511,7 @@ class MainWindow(QWidget):
         self.thread.wait(3000)
         self.dictionary.close()
         self.dictionary_ja.close()
+        self.dictionary_fr.close()
         self.glossary.close()
         self.store.close()
         self.log.close()

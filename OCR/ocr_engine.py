@@ -44,14 +44,26 @@ def _bbox(points, scale: float) -> tuple:
 class OcrEngine:
     """Carga el modelo una sola vez; reutilízalo para todas las capturas."""
 
-    def __init__(self):
+    def __init__(self, lang: str = ""):
+        """`lang` = "latin" usa el reconocedor de alfabeto latino (francés: é è ç à ù ô œ « »)."""
+        self.lang = lang
         try:  # paquete nuevo: `pip install rapidocr`
             from rapidocr import RapidOCR
             self._new_api = True
         except ImportError:  # paquete antiguo: `pip install rapidocr-onnxruntime`
             from rapidocr_onnxruntime import RapidOCR
             self._new_api = False
-        self._engine = RapidOCR()
+        self._engine = None
+        if lang == "latin" and self._new_api:
+            try:
+                from rapidocr import LangRec, OCRVersion
+                self._engine = RapidOCR(params={"Rec.lang_type": LangRec.LATIN,
+                                                "Rec.ocr_version": OCRVersion.PPOCRV5,
+                                                "Rec.model_type": "mobile"})
+            except Exception:  # noqa: BLE001  (versión sin modelo latino: se usa el de serie)
+                self._engine = None
+        if self._engine is None:
+            self._engine = RapidOCR()
 
     # Variantes de preparación y alturas (px) a las que se amplía el texto antes de reconocerlo.
     STRIP_VARIANTS = ("color",)               # probadas: "stretch" y "otsu" empeoran (lecturas seguras pero equivocadas)

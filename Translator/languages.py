@@ -40,6 +40,38 @@ def _en_find_word(text: str, index: int):
     return find_word_latin(text, index)
 
 
+# --- francés (juego en francés -> traducción al español) ---
+_FR_LETTER = r"[^\W\d_]"
+_FR_WORD = re.compile(rf"{_FR_LETTER}+['’]?")                       # «l'» (elisión) o palabra
+_FR_CHAIN = re.compile(rf"{_FR_LETTER}+(?:['’-]{_FR_LETTER}+)*")    # peut-être, est-ce, c'est-à-dire
+_FR_WHOLE = frozenset({"aujourd'hui", "quelqu'un", "quelqu'une", "presqu'île", "prud'homme", "entr'acte",
+                       "grand'mère", "grand'chose", "quelqu'uns", "quelques-uns", "quelques-unes"})
+
+
+def _fr_iter_words(text: str):
+    """(inicio, fin, palabra, compuesto). La elisión va aparte («l'amie» -> «l'» + «amie»);
+    el compuesto con guiones («peut-être», «dis-moi») se da como contexto para el diccionario."""
+    for chain in _FR_CHAIN.finditer(text):
+        group = chain.group()
+        low = group.lower().replace("’", "'")
+        if low in _FR_WHOLE:
+            yield chain.start(), chain.end(), group, ""
+            continue
+        compound = group if "-" in group else ""
+        for m in _FR_WORD.finditer(group):
+            yield chain.start() + m.start(), chain.start() + m.end(), m.group(), compound
+
+
+def _fr_find_word(text: str, index: int):
+    touching = None
+    for item in _fr_iter_words(text):
+        if item[0] <= index < item[1]:
+            return item
+        if index == item[1]:
+            touching = touching or item
+    return touching
+
+
 # --- japonés (juego en japonés -> traducción al inglés) ---
 def _ja_split(line: str) -> list:
     return [s.text for s in split_sentences_ja(line, merge_lines=False)]
@@ -57,6 +89,29 @@ def fix_english(text: str) -> str:
 
 def _identity(text: str) -> str:
     return text
+
+
+def _no_fixed(text: str):
+    return None
+
+
+def _zero() -> int:
+    return 0
+
+
+def _ja_prepare(text: str) -> str:
+    from ja_rules import prepare
+    return prepare(text)
+
+
+def _ja_fixed(text: str):
+    from ja_rules import fixed
+    return fixed(text)
+
+
+def _ja_rules_version():
+    from ja_rules import version
+    return version()
 
 
 # Palabras japonesas: las segmenta SudachiPy (sin él, no hay palabras bajo el mouse).
@@ -87,6 +142,11 @@ class LanguagePack:
     postprocess: Callable        # retoque de cada frase traducida
     sentence_joiner: str = " "   # cómo se pegan las frases traducidas
     has_ocr_modes: bool = False  # ¿tiene modos de OCR (japonés: normal / solo kana)?
+    preprocess: Callable = _identity    # frase -> lo que se le da al modelo (punto final, glosario)
+    fixed: Callable = _no_fixed         # frase -> traducción fija del glosario, o None
+    rules_version: Callable = _zero     # cambia cuando cambian las reglas (vacía la caché)
+    model_alts: tuple = ()              # repositorios alternativos si el principal no se puede descargar
+    ocr_lang: str = ""                  # modelo de reconocimiento de RapidOCR ("" = el de serie; "latin")
 
 
 PACKS = {
@@ -103,6 +163,13 @@ PACKS = {
         split_line=_ja_split, join_lines=join_wrapped_lines_ja, sentence_at=sentence_at_ja,
         iter_words=_ja_iter_words, find_word=_ja_find_word, postprocess=fix_english,
         has_ocr_modes=True),
+    "fr": LanguagePack(
+        code="fr", label="Francés → Español", source_name="francés", target_name="español",
+        model_repo="gaudi/opus-mt-fr-es-ctranslate2",
+        model_dir=MODELS_DIR / "opus-mt-fr-es-ctranslate2", warmup="Bonjour",
+        split_line=_en_split, join_lines=_en_join, sentence_at=sentence_at_latin,
+        iter_words=_fr_iter_words, find_word=_fr_find_word, postprocess=_identity,
+        model_alts=("michaelfeil/ct2fast-opus-mt-fr-es",), ocr_lang="latin"),
 }
 
 _active = PACKS["en"]
