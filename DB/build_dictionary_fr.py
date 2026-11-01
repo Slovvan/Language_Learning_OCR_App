@@ -233,6 +233,23 @@ def build():
     fd = read_freedict(*found)
     print(f"FreeDict: {len(fd):,} palabras ({time.time() - t0:.0f} s)")
 
+    # Términos de juegos y palabras que faltan (data/fr_extra.tsv): «first» va antes que los de FreeDict
+    extra = DATA_DIR / "fr_extra.tsv"
+    if extra.exists():
+        import csv
+        with open(extra, encoding="utf-8", newline="") as f:
+            for row in csv.DictReader(f, delimiter="\t"):
+                lemma = (row.get("lema") or "").strip().lower()
+                if not lemma or not (row.get("español") or "").strip():
+                    continue
+                item = (lemma, (row.get("ipa") or "").strip(), (row.get("categoría") or "").strip() or "expr.",
+                        (row.get("español") or "").replace("|", ", "), (row.get("definición") or "").strip())
+                if (row.get("modo") or "add").strip() == "first":
+                    fd[lemma].insert(0, item)
+                else:
+                    fd[lemma].append(item)
+        print(f"Extras: {extra.name}")
+
     rows, plain = [], set()
     for lemma, items in fd.items():
         if len(lemma) > 60:

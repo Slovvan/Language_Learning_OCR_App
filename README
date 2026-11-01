@@ -5,8 +5,9 @@
 "Etapa 5" "OCR Inmersivo(Pausa el juego y duplica el texto sobre pantalla usnado el OCR)" error de furigana
 "Etapa 6" "Implementación de Japones oon diccionario (ejecutar build_dictionary_ja antes)"
 "Etapa 7" "OCR con detección de Latin y Frances con Diccionario agregado"
+"Etapa 8" "Configuración de teclas, opciones accesibles tambien en el modo captura de pantalla."
 
 Principal:
 EN - ES (hecho)
-JP - EN (En progreso)
-FR - ES (a futuro)
+JP - EN (hecho)
+FR - ES (hecho)

@@ -14,6 +14,7 @@ import unicodedata
 from pathlib import Path
 
 from DB.dictionary import Entry, LookupResult, Sense, _split
+from DB.fr_morph import candidates as morph_candidates, ocr_variants
 from DB.fr_function_words import ALSO_CONTENT_FR, ELISIONS, FORMS_FR, FUNCTION_WORDS_FR
 
 DB_PATH = Path(__file__).resolve().parent / "data" / "dictionary_fr.db"
@@ -118,14 +119,23 @@ class FrDictionary:
                 out.append(x)
 
         add(t)
-        for lemma in _lemmas_of(t):
+        for base, _why in morph_candidates(t):             # reglas: passée -> passer, maximale -> maximal…
+            add(base)
+        for lemma in _lemmas_of(t):                        # simplemma: el resto
             add(lemma)
         if not out:                                        # sin tildes / OCR que las pierde: «epee» -> «épée»
             for (lemma,) in self._con.execute("SELECT lemma FROM plain WHERE folded=?", (fold(t),)):
                 add(lemma)
                 for lm in _lemmas_of(lemma):
                     add(lm)
-        if not out and "'" in t:                           # «aujourd'hui» ya lo cubre la exacta; «l'épée» suelta
+        if not out:                                        # una letra mal leída por el OCR: envovées -> envoyées
+            for variant in ocr_variants(t):
+                add(variant)
+                for base, _why in morph_candidates(variant):
+                    add(base)
+                if out:
+                    break
+        if not out and "'" in t:
             add(t.split("'")[-1])
         return out[:MAX_LEMMAS]
 

@@ -57,6 +57,7 @@ class OcrEngine:
         if lang == "latin" and self._new_api:
             try:
                 from rapidocr import LangRec, OCRVersion
+                # El reconocedor latino solo existe en versión «mobile» (con «small» RapidOCR lo rechaza).
                 self._engine = RapidOCR(params={"Rec.lang_type": LangRec.LATIN,
                                                 "Rec.ocr_version": OCRVersion.PPOCRV5,
                                                 "Rec.model_type": "mobile"})

@@ -26,19 +26,20 @@ from DB.phrase_log import PhraseLog
 from DB.glossary import GlossaryDictionary, UserGlossary
 from UI.glossary_window import GlossaryWindow
 from UI.log_view import LogWindow
-from UI.overlay import CaptureOverlay
+from UI.overlay import SELECT, CaptureOverlay
 from UI.word_popup import HoverTextEdit, WordPopup
 from UI.word_service import WordService
 from UI.ocr_worker import OcrWorker
 from UI.capture import bgr_to_qpixmap, grab_screen
 from UI.cards_window import CardsWindow
+from UI.settings import AppSettings
+from UI.settings_window import SettingsDialog
+from UI.hotkeys import HotkeyManager, global_label
 from Cards.cards import CardStore
 
 import Translator.japanese as japanese
 import Translator.languages as languages
 
-HOTKEY = "<ctrl>+<alt>+o"
-HOTKEY_LABEL = "Ctrl+Alt+O"
 
 
 def make_icon() -> QIcon:
@@ -68,25 +69,6 @@ def _has_simplemma() -> bool:
         return False
 
 
-class HotkeyBridge(QObject):
-    """Convierte el atajo global (hilo de pynput) en una señal de Qt."""
-    triggered = pyqtSignal()
-
-    def __init__(self):
-        super().__init__()
-        self._listener = None
-        try:
-            from pynput import keyboard
-            self._listener = keyboard.GlobalHotKeys({HOTKEY: self.triggered.emit})
-            self._listener.start()
-        except Exception as exc:  # noqa: BLE001
-            print(f"[aviso] Atajo global no disponible: {exc}")
-
-    def stop(self):
-        if self._listener:
-            self._listener.stop()
-
-
 class MainWindow(QWidget):
     process_requested = pyqtSignal(object, bool)   # imagen, unir_lineas
     card_requested = pyqtSignal(int, str, str)     # id de tarjeta, frase, palabra a traducir ("" = ninguna)
@@ -109,6 +91,8 @@ class MainWindow(QWidget):
 
         # --- idioma del juego y modo de OCR (se recuerdan entre sesiones) ---
         self.settings = QSettings("OCRTranslator", "fase6")
+        self.app_settings = AppSettings(self.settings)      # atajos, barra de la capa…
+        self.settings_window = None
         lang = str(self.settings.value("language", "en"))
         if lang not in languages.PACKS:
             lang = "en"
@@ -134,8 +118,10 @@ class MainWindow(QWidget):
         self.words.card_requested.connect(self.card_requested)
 
         # --- UI ---
-        self.btn_capture = QPushButton(f"Capturar región ({HOTKEY_LABEL})")
+        self.btn_capture = QPushButton(f"Capturar región ({self._hotkey_label()})")
         self.btn_capture.setEnabled(False)
+        self.btn_settings = QPushButton("Configuración…")
+        self.btn_settings.setToolTip("Atajos, teclas de la captura y comportamiento de la capa")
         self.btn_cards = QPushButton()
         self.btn_log = QPushButton()
         self.btn_glossary = QPushButton()
@@ -181,7 +167,8 @@ class MainWindow(QWidget):
         self.translation.setPlaceholderText("Traducción al español...")
 
         buttons = QHBoxLayout()
-        buttons.addWidget(self.btn_capture)
+        buttons.addWidget(self.btn_capture, 1)
+        buttons.addWidget(self.btn_settings)
         buttons2 = QHBoxLayout()
         buttons2.addWidget(self.btn_cards)
         buttons2.addWidget(self.btn_log)
@@ -232,7 +219,9 @@ class MainWindow(QWidget):
         # --- señales de la UI ---
         self.combo_lang.currentIndexChanged.connect(self.on_language_changed)
         self.combo_mode.currentIndexChanged.connect(self.on_mode_changed)
+        self.chk_merge.toggled.connect(lambda _c: self._sync_toolbar())
         self.btn_capture.clicked.connect(self.start_capture)
+        self.btn_settings.clicked.connect(self.open_settings)
         self.btn_cards.clicked.connect(self.open_cards)
         self.btn_log.clicked.connect(self.open_log)
         self.btn_glossary.clicked.connect(self.open_glossary)
@@ -245,9 +234,11 @@ class MainWindow(QWidget):
         self.output.word_clicked.connect(self.on_word_clicked)
         self.output.textChanged.connect(self.refresh_marks)
 
-        # --- atajo global (opcional) ---
-        self.hotkey = HotkeyBridge()
-        self.hotkey.triggered.connect(self.start_capture)
+        # --- atajos globales (opcional: necesitan pynput) ---
+        self.hotkeys = HotkeyManager()
+        self.hotkeys.triggered.connect(self.on_hotkey)
+        self.hotkeys.set_bindings(self.app_settings.hotkeys())
+        self.app_settings.changed.connect(self.on_setting_changed)
 
         self._apply_language_ui()
         self._update_buttons()
@@ -264,6 +255,7 @@ class MainWindow(QWidget):
         self.lbl_translation.setText(f"Traducción ({pack.target_name})")
         self.translation.setPlaceholderText(f"Traducción al {pack.target_name}...")
         self.combo_mode.setVisible(pack.has_ocr_modes)
+        self._sync_toolbar()
         if pack.code == "en":
             self.dict_note.setText("⚠ Diccionario no encontrado: ejecuta build_dictionary.py para ver "
                                    "significados al pasar el mouse sobre una palabra.")
@@ -312,6 +304,7 @@ class MainWindow(QWidget):
         mode = self.combo_mode.currentData()
         self.settings.setValue("ocr_mode", mode)
         self.configure_requested.emit(self.combo_lang.currentData(), mode)
+        self._sync_toolbar()
 
     # --- palabras guardadas ---
     def refresh_marks(self):
@@ -410,8 +403,10 @@ class MainWindow(QWidget):
         finally:
             self._grabbing = False
         if self.overlay is None:
-            self.overlay = CaptureOverlay()
+            self.overlay = CaptureOverlay(settings=self.app_settings)
             self.overlay.region_selected.connect(self.on_region)
+            self.overlay.mode_requested.connect(self.on_overlay_mode)
+            self.overlay.settings_requested.connect(self.open_settings)
             self.overlay.word_context.connect(self.words.set_context)
             self.overlay.word_hovered.connect(self.words.hover)
             self.overlay.hover_ended.connect(self.words.hover_left)
@@ -419,6 +414,7 @@ class MainWindow(QWidget):
             self.overlay.word_clicked.connect(self.on_overlay_word_clicked)
             self.overlay.merge_toggled.connect(self.on_merge_toggled)
             self.overlay.closed.connect(self.on_overlay_closed)
+        self._sync_toolbar()
         self.overlay.open(frame)
 
     def on_overlay_closed(self):
@@ -430,13 +426,66 @@ class MainWindow(QWidget):
         self.preview.setPixmap(pix.scaledToWidth(min(pix.width(), 480), Qt.SmoothTransformation))
         self._request(image)
 
+    def _reading_overlay(self) -> bool:
+        """¿La capa tiene ya una región para volver a procesar?"""
+        return (self.overlay is not None and self.overlay.isVisible() and self.overlay.state != SELECT
+                and self._last_image is not None)
+
     def on_merge_toggled(self):
-        """Tecla M en la capa: cambia «unir líneas» y vuelve a procesar la misma región."""
-        if self._last_image is None or not self.btn_capture.isEnabled():
+        """Tecla M o botón «Unir líneas» de la capa: cambia la casilla y vuelve a procesar la misma región."""
+        if self._reading_overlay() and not self.btn_capture.isEnabled():
+            self._sync_toolbar()                         # procesando: se espera
             return
         self.chk_merge.setChecked(not self.chk_merge.isChecked())
-        self._request(self._last_image)
-        self.overlay.show_toast("Líneas unidas" if self.chk_merge.isChecked() else "Líneas separadas")
+        self._sync_toolbar()
+        if self.overlay is not None and self.overlay.isVisible():
+            self.overlay.show_toast("Líneas unidas" if self.chk_merge.isChecked() else "Líneas separadas")
+        if self._reading_overlay():
+            self._request(self._last_image)
+
+    def on_overlay_mode(self, mode):
+        """Teclas 1-2-3 o botones de la capa: cambia el modo de OCR (japonés) y relee la misma región."""
+        if not languages.active().has_ocr_modes:
+            return
+        if self._reading_overlay() and not self.btn_capture.isEnabled():
+            self._sync_toolbar()
+            return
+        index = self.combo_mode.findData(mode)
+        if index < 0:
+            return
+        changed = index != self.combo_mode.currentIndex()
+        self.combo_mode.setCurrentIndex(index)           # on_mode_changed avisa al worker
+        if self.overlay is not None and self.overlay.isVisible():
+            self.overlay.show_toast(f"Modo de OCR: {self.combo_mode.currentText().split(' (')[0]}")
+        if changed and self._reading_overlay():
+            self._request(self._last_image)
+
+    def _sync_toolbar(self):
+        if self.overlay is not None:
+            self.overlay.set_toolbar_state(str(self.combo_mode.currentData()), self.chk_merge.isChecked(),
+                                           languages.active().has_ocr_modes)
+
+    # --- configuración y atajos ---
+    def _hotkey_label(self) -> str:
+        return global_label(self.app_settings.get("hotkey.capture"))
+
+    def on_hotkey(self, action):
+        if action == "capture":
+            self.start_capture()
+
+    def on_setting_changed(self, key):
+        if key.startswith("hotkey."):
+            self.hotkeys.set_bindings(self.app_settings.hotkeys())
+            self.btn_capture.setText(f"Capturar región ({self._hotkey_label()})")
+            if self.btn_capture.isEnabled():
+                self.status.setText(f"Listo. Pulsa el botón o {self._hotkey_label()}.")
+
+    def open_settings(self):
+        if self.settings_window is None:
+            self.settings_window = SettingsDialog(self.app_settings, self.hotkeys)
+        self.settings_window.show()
+        self.settings_window.raise_()
+        self.settings_window.activateWindow()
 
     def _request(self, image):
         self._last_image = image
@@ -448,7 +497,7 @@ class MainWindow(QWidget):
 
     # --- resultados del worker ---
     def on_ready(self):
-        self.status.setText(f"Listo. Pulsa el botón o {HOTKEY_LABEL}.")
+        self.status.setText(f"Listo. Pulsa el botón o {self._hotkey_label()}.")
         self.btn_capture.setEnabled(True)
 
     def on_result(self, res):
@@ -506,7 +555,9 @@ class MainWindow(QWidget):
         for w in (self.cards_window, self.log_window, self.glossary_window):
             if w is not None:
                 w.close()
-        self.hotkey.stop()
+        self.hotkeys.stop()
+        if self.settings_window is not None:
+            self.settings_window.close()
         self.thread.quit()
         self.thread.wait(3000)
         self.dictionary.close()
