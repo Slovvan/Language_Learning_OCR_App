@@ -174,6 +174,22 @@ class MainWindow(QWidget):
         self.chk_freeze_auto.setToolTip("Cada frase detectada por la lectura automática congela la región (F la descongela).")
         for chk, key in ((self.chk_freeze_read, "live_freeze_read"), (self.chk_freeze_auto, "live_freeze_auto")):
             chk.setChecked(self.settings.value(key, False) in (True, "true", "1", 1))
+        self.chk_live_orig = QCheckBox("Original en el panel")
+        self.chk_live_orig.setToolTip("El panel muestra, además de la traducción, el texto reconocido.")
+        self.chk_live_hist = QCheckBox("Historial")
+        self.chk_live_hist.setToolTip("El panel acumula las últimas lecturas (la más nueva arriba), cada una con ✕ para borrarla.\n"
+                                      "«Limpiar» en el panel las borra todas. El registro principal de la app no se toca.")
+        self.chk_live_save = QCheckBox("Guardar en el registro")
+        self.chk_live_save.setToolTip("Cada lectura del modo en vivo se guarda en «Registro de frases». Desmarcada, solo vive en el panel.")
+        self.chk_live_over = QCheckBox("Traducción sobre la región")
+        self.chk_live_over.setToolTip("Sobre la región se dibuja la traducción en lugar del texto reconocido.\n"
+                                      "Mientras esté activa no se pueden guardar palabras con el mouse.")
+        self.chk_live_temp = QCheckBox("Panel temporal")
+        self.chk_live_temp.setToolTip("El panel aparece al leer y se esconde solo unos segundos después (si el mouse no está encima).")
+        for chk, key, default in ((self.chk_live_orig, "live_show_original", False), (self.chk_live_hist, "live_history", False),
+                                  (self.chk_live_save, "live_save_log", True), (self.chk_live_over, "live_over", False),
+                                  (self.chk_live_temp, "live_panel_temp", False)):
+            chk.setChecked(self.settings.value(key, default) in (True, "true", "1", 1))
         self.btn_live_edit = QPushButton("Región (E)")
         self.btn_live_edit.setToolTip("Mueve o cambia el tamaño de la región fija (Ctrl+Alt+E)")
         self.btn_live_stop = QPushButton("Detener")
@@ -232,6 +248,14 @@ class MainWindow(QWidget):
         live_row2.addWidget(self.chk_freeze_read)
         live_row2.addWidget(self.chk_freeze_auto)
         live_row2.addStretch(1)
+        live_row3 = QHBoxLayout()
+        for chk in (self.chk_live_orig, self.chk_live_hist, self.chk_live_save):
+            live_row3.addWidget(chk)
+        live_row3.addStretch(1)
+        live_row4 = QHBoxLayout()
+        for chk in (self.chk_live_over, self.chk_live_temp):
+            live_row4.addWidget(chk)
+        live_row4.addStretch(1)
         buttons = QHBoxLayout()
         buttons.addWidget(self.btn_capture)
         buttons2 = QHBoxLayout()
@@ -250,6 +274,8 @@ class MainWindow(QWidget):
         layout.addLayout(modes)
         layout.addLayout(live_row)
         layout.addLayout(live_row2)
+        layout.addLayout(live_row3)
+        layout.addLayout(live_row4)
         layout.addLayout(buttons)
         layout.addLayout(buttons2)
         layout.addLayout(buttons3)
@@ -294,6 +320,10 @@ class MainWindow(QWidget):
         self.btn_live_panel.clicked.connect(lambda: self.live.toggle_panel())
         self.btn_live_edit.clicked.connect(lambda: self.live.toggle_edit())
         self.chk_live_auto.clicked.connect(lambda on: self.live.set_auto(on))
+        for chk, key, arg in ((self.chk_live_orig, "live_show_original", "original"), (self.chk_live_hist, "live_history", "history"),
+                              (self.chk_live_save, "live_save_log", "save_log"), (self.chk_live_over, "live_over", "over"),
+                              (self.chk_live_temp, "live_panel_temp", "temp")):
+            chk.toggled.connect(lambda on, key=key, arg=arg: (self.settings.setValue(key, on), self.live.set_panel_options(**{arg: on})))
         self.chk_freeze_read.toggled.connect(lambda on: (self.settings.setValue("live_freeze_read", on), self.live.set_freeze_options(on, None)))
         self.chk_freeze_auto.toggled.connect(lambda on: (self.settings.setValue("live_freeze_auto", on), self.live.set_freeze_options(None, on)))
         self.btn_live_stop.clicked.connect(lambda: self.live.stop())
@@ -493,6 +523,8 @@ class MainWindow(QWidget):
         self.chk_live_auto.setVisible(live)
         self.chk_freeze_read.setVisible(live)
         self.chk_freeze_auto.setVisible(live)
+        for chk in (self.chk_live_orig, self.chk_live_hist, self.chk_live_save, self.chk_live_over, self.chk_live_temp):
+            chk.setVisible(live)
         for b in (self.btn_live_read, self.btn_live_text, self.btn_live_panel, self.btn_live_edit, self.btn_live_stop):
             b.setVisible(live)
             b.setEnabled(self.live.active)
@@ -612,7 +644,7 @@ class MainWindow(QWidget):
             avg = sum(s for _, s in res.lines) / len(res.lines)
             self._ocr_info = f"{len(res.lines)} línea(s), confianza media {avg:.0%}"
             self.status.setText(f"OCR: {self._ocr_info}. Traduciendo...")
-            if res.text.strip():
+            if res.text.strip() and (not self.live.inflight or self.live.save_log):
                 self._log_id = self.log.add(res.text, "", self._merge_used, avg)
                 self._log_changed()
         else:
