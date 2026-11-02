@@ -7,10 +7,8 @@ seguir (o ser una cinemática) sin que cambie lo que estás leyendo. Sobre las p
 de la capa funciona lo mismo que en la ventana principal: ventanita del diccionario al dejar
 quieto el mouse, clic para guardar y marca verde en las ya guardadas.
 
-Teclas (se pueden cambiar en Ajustes):  Esc cierra · T muestra/oculta la traducción ·
-         O muestra/oculta el texto de la capa · M une o separa las líneas partidas ·
-         1 / 2 / 3 cambian el modo de OCR (japonés) · clic derecho: elegir otra región.
-Arriba a la izquierda hay una barra con los modos de OCR (siempre visible, en viñeta o oculta).
+Teclas:  Esc cierra · T muestra/oculta la traducción · O muestra/oculta el texto de la capa ·
+         M une o separa las líneas partidas · clic derecho: elegir otra región.
 """
 import html
 from dataclasses import dataclass, field
@@ -23,9 +21,6 @@ from PyQt5.QtWidgets import QApplication, QWidget
 
 import Translator.languages as languages
 from UI.capture import bgr_to_qpixmap
-from UI.hotkeys import overlay_matches
-from UI.overlay_toolbar import OverlayToolbar
-from UI.settings import OVERLAY_ACTIONS
 from UI.word_popup import iter_words
 
 SELECT, READING, TEXT = range(3)          # estados de la capa
@@ -38,10 +33,10 @@ HOVER = QColor(255, 255, 255, 70)
 PAD_X, PAD_Y = 3, 2                       # cuánto sobresale el parche del cuadro del OCR
 RING = 3                                  # grosor (px) del borde que se mira para sacar el color de fondo
 HINT_SELECT = "Arrastra para elegir la región · Esc cancela"
+HINT_SELECT_LIVE = "Modo en vivo: arrastra para marcar la región fija donde sale el texto · Esc cancela"
 HINT_READING = "Leyendo el texto…"
-HINT_TEXT = "Clic: guardar palabra · {translation} traducción · {layer} original · {merge} unir líneas · Clic der.: otra región · {close}"
-HINT_EMPTY = "No se detectó texto · Clic derecho: otra región · {close} cierra"
-DEFAULT_KEYS = {k: d for k, _n, d in OVERLAY_ACTIONS}
+HINT_TEXT = "Clic: guardar palabra · T traducción · O original · M unir líneas · Clic der.: otra región · Esc"
+HINT_EMPTY = "No se detectó texto · Clic derecho: otra región · Esc cierra"
 
 
 @dataclass
@@ -129,18 +124,18 @@ class CaptureOverlay(QWidget):
     word_hovered = pyqtSignal(str, str, QPoint)    # palabra, compuesto, posición global
     word_context = pyqtSignal(str, int)            # justo antes: línea de texto y posición de la palabra en ella
     hover_ended = pyqtSignal()
+    word_anchor = pyqtSignal(QRect, bool)          # justo antes: rect global de la palabra y si el popup va arriba
     wheel_moved = pyqtSignal(int)                  # rueda del mouse: desplaza la ventanita del diccionario
     word_clicked = pyqtSignal(str, str, int)       # palabra, compuesto, posición en `self.text`
-    merge_toggled = pyqtSignal()                   # tecla M o botón «Unir líneas»
-    mode_requested = pyqtSignal(str)               # «normal» / «kana» / «vertical» (teclas 1-2-3 o la barra)
-    settings_requested = pyqtSignal()              # botón «Ajustes…» de la barra
+    merge_toggled = pyqtSignal()                   # tecla M
+    region_chosen = pyqtSignal(object, object)     # modo en vivo: caja en px reales (x0,y0,x1,y1) y QRect global lógico
     closed = pyqtSignal()                          # se cerró (Esc o cancelada la selección)
 
-    def __init__(self, hover_delay_ms: int = 350, settings=None):
+    def __init__(self, hover_delay_ms: int = 350):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
-        self._settings = settings                  # AppSettings (teclas y barra); None = valores por defecto
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
+        self.select_only = False
         self._frame = None
         self._pixmap = None
         self._state = SELECT
@@ -175,34 +170,14 @@ class CaptureOverlay(QWidget):
         self._toast_timer.setInterval(2500)
         self._toast_timer.timeout.connect(self._clear_toast)
 
-        self.toolbar = OverlayToolbar(self)
-        self.toolbar.move(16, 14)
-        self.toolbar.mode_requested.connect(self.mode_requested)
-        self.toolbar.merge_toggled.connect(self.merge_toggled)
-        self.toolbar.settings_requested.connect(self.settings_requested)
-        if settings is not None:
-            self.toolbar.set_policy(settings.get("ui.toolbar"))
-            settings.changed.connect(self._on_setting)
-
-    def _key(self, action: str) -> str:
-        return self._settings.get(f"overlay.key.{action}") if self._settings else DEFAULT_KEYS[action]
-
-    def _on_setting(self, key: str):
-        if key == "ui.toolbar":
-            self.toolbar.set_policy(self._settings.get("ui.toolbar"))
-        self.update()
-
-    def set_toolbar_state(self, mode: str, merge: bool, has_modes: bool):
-        keys = {f"{k}": self._key(k) for k in DEFAULT_KEYS}
-        self.toolbar.set_state(mode, merge, has_modes, keys)
-
     # ------------------------------------------------------------------ ciclo de vida
     @property
     def state(self) -> int:
         return self._state
 
-    def open(self, frame: np.ndarray):
+    def open(self, frame: np.ndarray, select_only: bool = False):
         """Muestra la captura congelada a pantalla completa y empieza la selección."""
+        self.select_only = select_only            # modo en vivo: solo se elige la región; se emite region_chosen
         self._frame = frame
         self._pixmap = bgr_to_qpixmap(frame)
         self._reset_to_select()
@@ -210,7 +185,6 @@ class CaptureOverlay(QWidget):
         if screen is not None:
             self.setGeometry(screen.geometry())
         self.showFullScreen()
-        self.toolbar.raise_()
         self.activateWindow()
         self.raise_()
         self.setFocus()
@@ -252,6 +226,10 @@ class CaptureOverlay(QWidget):
         self._scale = (sx, sy)
         self._region = QRectF(x0 / sx, y0 / sy, (x1 - x0) / sx, (y1 - y0) / sy)
         self._origin = self._current = None
+        if self.select_only:
+            self.region_chosen.emit((x0, y0, x1, y1), self._region.toAlignedRect().translated(self.geometry().topLeft()))
+            self.dismiss()
+            return
         self._state = READING
         self._busy = False
         self.setCursor(Qt.ArrowCursor)
@@ -414,6 +392,8 @@ class CaptureOverlay(QWidget):
     def _emit_hover(self):
         if self._hover_pending:
             self._hover_shown = True
+            if getattr(self, "_hover_anchor", None):
+                self.word_anchor.emit(*self._hover_anchor)
             if self._hover_ctx:
                 self.word_context.emit(*self._hover_ctx)
             self.word_hovered.emit(*self._hover_pending)
@@ -458,6 +438,10 @@ class CaptureOverlay(QWidget):
             w = line.words[hit[1]]
             self._hover_pending = (w.word, w.compound, e.globalPos())
             self._hover_ctx = (line.text, w.start)
+            p = line.patch
+            r = (QRectF(p.left(), w.x0, p.width(), w.x1 - w.x0) if line.vertical
+                 else QRectF(w.x0, p.top(), w.x1 - w.x0, p.height())).toAlignedRect()
+            self._hover_anchor = (QRect(self.mapToGlobal(r.topLeft()), r.size()), p.center().y() > self.height() / 2)
             self._hover_timer.start()
         self.setCursor(Qt.PointingHandCursor if hit else Qt.ArrowCursor)
         self.update()
@@ -485,28 +469,18 @@ class CaptureOverlay(QWidget):
         super().leaveEvent(e)
 
     def keyPressEvent(self, e):
-        mods, key = e.modifiers(), e.key()
-
-        def hit(action):
-            return overlay_matches(self._key(action), mods, key)
-
-        if hit("close"):
+        key = e.key()
+        if key == Qt.Key_Escape:
             self.dismiss()
-        elif self._state == TEXT and hit("translation"):
+        elif self._state == TEXT and key == Qt.Key_T:
             self._show_translation = not self._show_translation
             self.update()
-        elif self._state == TEXT and hit("layer"):
+        elif self._state == TEXT and key == Qt.Key_O:
             self._show_layer = not self._show_layer
             self._end_hover()
             self.update()
-        elif hit("merge"):
+        elif self._state in (READING, TEXT) and key == Qt.Key_M:
             self.merge_toggled.emit()
-        elif hit("mode_normal"):
-            self.mode_requested.emit("normal")
-        elif hit("mode_kana"):
-            self.mode_requested.emit("kana")
-        elif hit("mode_vertical"):
-            self.mode_requested.emit("vertical")
         else:
             super().keyPressEvent(e)
 
@@ -548,10 +522,9 @@ class CaptureOverlay(QWidget):
             doc.drawContents(p)
             p.restore()
 
-        names = {k: self._key(k) for k in DEFAULT_KEYS}
-        hint = {SELECT: HINT_SELECT, READING: HINT_READING,
-                TEXT: (HINT_TEXT if self._lines else HINT_EMPTY).format(**names)}[self._state]
-        self._pill(p, hint, 58 if self.toolbar.policy == "always" else 14)
+        hint = {SELECT: HINT_SELECT_LIVE if self.select_only else HINT_SELECT, READING: HINT_READING,
+                TEXT: HINT_TEXT if self._lines else HINT_EMPTY}[self._state]
+        self._pill(p, hint, 14)
         if self._toast:
             self._pill(p, self._toast, self.height() - 50, QColor(27, 107, 47, 235))
         p.end()

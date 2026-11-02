@@ -1,9 +1,10 @@
 """Cuadro de texto que detecta la palabra bajo el mouse (hover y clic) y ventanita con el diccionario."""
 import html
 import re
+
 from urllib.parse import quote, unquote
 
-from PyQt5.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer, QUrl, pyqtSignal
+from PyQt5.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, Qt, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import (QColor, QFont, QFontMetrics, QImage, QPainter, QPen, QTextCursor, QTextDocument)
 from PyQt5.QtWidgets import QApplication, QFrame, QTextBrowser, QTextEdit, QVBoxLayout
 
@@ -334,6 +335,7 @@ class WordPopup(QFrame):
     MAX_HEIGHT = 460
     entered = pyqtSignal()      # el mouse entró en la ventanita
     left = pyqtSignal()         # el mouse salió
+    _anchor = None              # (QRect global de la palabra, arriba?) → el popup se pega a su vértice
 
     def __init__(self):
         super().__init__(None, Qt.ToolTip | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
@@ -358,6 +360,11 @@ class WordPopup(QFrame):
 
     def plain_text(self) -> str:
         return self._view.toPlainText()
+
+    def set_anchor(self, rect=None, above: bool = False):
+        """Pega el popup al rectángulo `rect` (global) de la palabra: arriba o abajo de él, alineado a su
+        borde izquierdo, para no estorbar el recorrido del mouse. `None` vuelve a ubicarlo junto al cursor."""
+        self._anchor = None if rect is None else (QRect(rect), bool(above))
 
     @property
     def scrollable(self) -> bool:
@@ -393,11 +400,22 @@ class WordPopup(QFrame):
         self._view.setFixedSize(self.WIDTH, height)
         self.setFixedSize(self.WIDTH + 2, height + 2)       # +2: borde de 1 px
         self._view.verticalScrollBar().setValue(0)
-        x, y = global_pos.x() + 10, global_pos.y() + 14     # cerca del cursor: se puede entrar con poco movimiento
-        if x + self.width() > area.right():
-            x = max(area.left(), global_pos.x() - self.width() - 10)
-        if y + self.height() > area.bottom():
-            y = max(area.top(), area.bottom() - self.height())
+        if self._anchor is not None:
+            rect, above = self._anchor
+            x = rect.left()
+            y = rect.top() - self.height() if above else rect.bottom() + 1
+            if y < area.top():                      # no cabe arriba: abajo (y al revés)
+                y = rect.bottom() + 1
+            elif y + self.height() > area.bottom() + 1 and not above:
+                y = rect.top() - self.height()
+            x = max(area.left(), min(x, area.right() - self.width()))
+            y = max(area.top(), min(y, area.bottom() - self.height()))
+        else:
+            x, y = global_pos.x() + 10, global_pos.y() + 14     # cerca del cursor: se puede entrar con poco movimiento
+            if x + self.width() > area.right():
+                x = max(area.left(), global_pos.x() - self.width() - 10)
+            if y + self.height() > area.bottom():
+                y = max(area.top(), area.bottom() - self.height())
         self.move(x, y)
         self.show()
         self.raise_()

@@ -25,6 +25,7 @@ class OverlayToolbar(QFrame):
     mode_requested = pyqtSignal(str)       # "normal" / "kana" / "vertical"
     merge_toggled = pyqtSignal()
     settings_requested = pyqtSignal()
+    action_requested = pyqtSignal(str)     # botones extra (modo en vivo): «read», «pause», «stop»…
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -63,6 +64,7 @@ class OverlayToolbar(QFrame):
         self.gear.setFocusPolicy(Qt.NoFocus)
         self.gear.clicked.connect(lambda _c=False: self.settings_requested.emit())
         lay.addWidget(self.gear)
+        self.extra = {}                    # nombre -> botón (se añaden con add_action)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(COLLAPSE_MS)
@@ -83,6 +85,22 @@ class OverlayToolbar(QFrame):
         self._expanded = self._policy == "always"
         self._timer.stop()
         self._refresh()
+
+    def add_action(self, name: str, text: str, tooltip: str = "", checkable: bool = False) -> QToolButton:
+        """Botón extra delante de «Ajustes…» (el panel del modo en vivo lo usa para leer/pausar/detener)."""
+        b = QToolButton()
+        b.setText(text)
+        b.setToolTip(tooltip)
+        b.setCheckable(checkable)
+        b.setFocusPolicy(Qt.NoFocus)
+        b.clicked.connect(lambda _c=False, n=name: self.action_requested.emit(n))
+        self.layout().insertWidget(self.layout().indexOf(self.gear), b)
+        self.extra[name] = b
+        self._refresh()
+        return b
+
+    def set_tab_text(self, text: str):
+        self.tab.setText(text)
 
     def set_state(self, mode: str, merge: bool, has_modes: bool, keys: dict = None):
         """`keys`: {«normal»: «1», «merge»: «M»…} solo para mostrar en los textos de ayuda."""
@@ -105,6 +123,8 @@ class OverlayToolbar(QFrame):
             b.setVisible(show_body and self._has_modes)
         self.merge.setVisible(show_body)
         self.gear.setVisible(show_body)
+        for b in getattr(self, "extra", {}).values():
+            b.setVisible(show_body)
         self.setVisible(not hidden)
         self.adjustSize()
 
