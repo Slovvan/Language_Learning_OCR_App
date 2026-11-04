@@ -1,63 +1,76 @@
-"""Ventana de configuración: atajos globales, teclas de la captura y comportamiento de la capa.
-
-Los cambios se aplican al momento (no hay «Aceptar»): cada control escribe en AppSettings, que avisa
-a quien lo necesite (atajos globales, barra de la capa…).
-"""
+"""Ventana de configuración: tres pestañas (Atajos, Modo en vivo, Apariencia). Los cambios se aplican al momento."""
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import (QComboBox, QDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog,
-                             QCheckBox, QLabel, QListWidget, QScrollArea, QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
+from PyQt5.QtWidgets import (QComboBox, QDialog, QFrame, QScrollArea, QFormLayout, QGridLayout, QHBoxLayout, QLabel, QPushButton, QSlider, QSpinBox,
+                             QTabWidget, QVBoxLayout, QWidget)
 
-import UI.profiles as profiles
-
+from UI.app_settings import (ACTIONS, get_ocr_bar, KEY_SCOPES, NUMBERS, default_bindings, default_keys, get_number, load_bindings,
+                          load_keys)
 from UI.hotkeys import (MAX_KEYS, global_key_token, global_label, is_risky, normalize_global, normalize_overlay,
                      overlay_key_from_event)
-from UI.settings import DEFAULTS, GLOBAL_ACTIONS, OVERLAY_ACTIONS, RANGES
-
-TOOLBAR_CHOICES = (("hover", "En viñeta: una pestaña que se abre al pasar el mouse (no tapa la pantalla)"),
-                   ("always", "Siempre visible"),
-                   ("hidden", "Oculta (solo con las teclas)"))
 
 
-MODE_CHOICES = (("frozen", "Congelar la pantalla: eliges una región cada vez (el juego queda tapado por la captura)"),
-                ("live", "En vivo: una región fija que se vigila sin congelar ni interrumpir el juego"))
-TRIGGER_CHOICES = (("auto", "Automático: leer cuando el texto cambie y se quede quieto"),
-                   ("button", "Solo con el botón «Leer ahora» (o su atajo)"),
-                   ("click", "Al hacer clic o pulsar Enter/Espacio/flechas/Ctrl en el juego"))
-SIDE_CHOICES = (("auto", "Automático (donde quepa)"), ("below", "Debajo de la región"), ("above", "Encima"),
-                ("right", "A la derecha"), ("left", "A la izquierda"))
-LAYER_CHOICES = (("original", "El texto original reconocido, como en la captura congelada (permite consultar palabras)"),
-                 ("translation", "La traducción (sustituye al texto del juego)"))
-PANEL_SHOW_CHOICES = (("always", "Abierto: aparece junto a la región"), ("hidden", "Oculto (se abre con su atajo)"))
-PANEL_MODE_CHOICES = (("log", "Historial: guarda las últimas lecturas y deja quitar las erróneas con ✕"),
-                      ("last", "Solo la última lectura"))
-FRAME_CHOICES = (("always", "Mostrar un marco alrededor de la región"), ("hidden", "Sin marco"))
+class SingleKeyButton(QPushButton):
+    """Muestra una tecla (con o sin Ctrl/Alt/Mayús) y espera la nueva al pulsarlo. Esc cancela."""
+    captured = pyqtSignal(str)
 
-# (clave, texto, ayuda, sufijo)
-LIVE_NUMBERS = (
-    ("live.sensitivity", "Sensibilidad al cambio", "1 = solo cambios grandes · 10 = cualquier cambio pequeño", ""),
-    ("live.interval_ms", "Revisar la región cada", "Menos tiempo = reacciona antes pero gasta más CPU", " ms"),
-    ("live.stable_ms", "Esperar a que el texto se quede quieto", "Evita leer a medias el texto que aparece letra a letra", " ms"),
-    ("live.min_gap_ms", "Separación mínima entre lecturas", "Evita lecturas seguidas cuando el texto parpadea", " ms"),
-    ("live.log_max", "Lecturas que guarda el historial", "Las más antiguas se van quitando", ""),
-    ("live.panel_hide_s", "Ocultar el panel tras", "0 = no se oculta solo", " s"),
-    ("live.panel_font", "Tamaño de letra del panel", "", " px"),
-    ("live.panel_opacity", "Opacidad del panel", "", " %"),
-)
+    def __init__(self, value: str = ""):
+        super().__init__()
+        self._value = value
+        self._waiting = False
+        self.setMinimumWidth(200)
+        self.clicked.connect(self._start)
+        self._show()
+
+    def set_value(self, value: str):
+        self._value = value
+        self._waiting = False
+        self.releaseKeyboard()
+        self._show()
+
+    def _show(self):
+        self.setText("Pulsa la tecla…" if self._waiting else (self._value or "(sin tecla)"))
+
+    def _start(self):
+        self._waiting = True
+        self.grabKeyboard()
+        self.setFocus()
+        self._show()
+
+    def _stop(self):
+        self._waiting = False
+        self.releaseKeyboard()
+        self._show()
+
+    def focusOutEvent(self, e):
+        if self._waiting:
+            self._stop()
+        super().focusOutEvent(e)
+
+    def keyPressEvent(self, e):
+        if not self._waiting:
+            super().keyPressEvent(e)
+            return
+        if e.key() == Qt.Key_Escape and e.modifiers() == Qt.NoModifier:
+            self._stop()                                    # Esc cancela (para dejar Esc como tecla, queda por defecto)
+            return
+        combo = overlay_key_from_event(e.modifiers(), e.key())
+        if combo is None:                                   # solo un modificador: se sigue esperando
+            return
+        self._stop()
+        self.captured.emit(combo)
 
 
 class KeyCaptureButton(QPushButton):
-    """Botón que muestra un atajo y, al pulsarlo, espera la nueva combinación."""
-    captured = pyqtSignal(str)             # atajo nuevo (ya normalizado)
-    rejected = pyqtSignal(str)             # motivo por el que no se aceptó lo pulsado
+    """Muestra un atajo; al pulsarlo espera la nueva combinación (de 1 a 3 teclas) y se cierra al soltar todo."""
+    captured = pyqtSignal(str)
+    rejected = pyqtSignal(str)
 
-    def __init__(self, kind: str, value: str = ""):
+    def __init__(self, value: str = ""):
         super().__init__()
-        self.kind = kind                   # "global" (pynput, de 1 a 3 teclas) o "overlay" (Qt, una tecla)
         self._value = value
         self._waiting = False
-        self._down = set()                 # teclas que siguen pulsadas mientras se graba un atajo global
-        self._seen = []                    # ...y todas las que se pulsaron, en orden
-        self.setMinimumWidth(190)
+        self._down, self._seen = set(), []
+        self.setMinimumWidth(200)
         self.clicked.connect(self._start)
         self._show()
 
@@ -71,11 +84,8 @@ class KeyCaptureButton(QPushButton):
         self.releaseKeyboard()
         self._show()
 
-    def label_of(self, value: str) -> str:
-        return global_label(value) if self.kind == "global" else value
-
     def _show(self):
-        self.setText("Pulsa la combinación…" if self._waiting else (self.label_of(self._value) or "(sin atajo)"))
+        self.setText("Pulsa la combinación…" if self._waiting else (global_label(self._value) or "(sin atajo)"))
 
     def _start(self):
         self._waiting = True
@@ -98,35 +108,25 @@ class KeyCaptureButton(QPushButton):
         if not self._waiting:
             super().keyPressEvent(e)
             return
-        key = e.key()
-        if self.kind == "global":
-            # Atajo de 1 a 3 teclas: se graba todo lo que se pulsa y se cierra al soltar la última.
-            if key == Qt.Key_Escape and not self._seen:
-                self._stop()
-                return
-            if e.isAutoRepeat():
-                return
-            token = global_key_token(e.modifiers(), key)
-            if token is not None:
-                self._down.add(token)
-                if token not in self._seen:
-                    self._seen.append(token)
-                self.setText(" + ".join(global_label(t) for t in self._seen) + " …")
-            return
-        combo = overlay_key_from_event(e.modifiers(), key)
-        if combo is None:                  # solo un modificador: se sigue esperando
-            return
-        self._stop()
-        self.captured.emit(combo)
-
-    def keyReleaseEvent(self, e):
-        if not self._waiting or self.kind != "global":
-            super().keyReleaseEvent(e)
+        if e.key() == Qt.Key_Escape and not self._seen:
+            self._stop()
             return
         if e.isAutoRepeat():
             return
         token = global_key_token(e.modifiers(), e.key())
-        self._down.discard(token)
+        if token is not None:
+            self._down.add(token)
+            if token not in self._seen:
+                self._seen.append(token)
+            self.setText(" + ".join(global_label(t) for t in self._seen) + " …")
+
+    def keyReleaseEvent(self, e):
+        if not self._waiting:
+            super().keyReleaseEvent(e)
+            return
+        if e.isAutoRepeat():
+            return
+        self._down.discard(global_key_token(e.modifiers(), e.key()))
         if self._down or not self._seen:
             return
         seen, self._seen = self._seen, []
@@ -136,242 +136,264 @@ class KeyCaptureButton(QPushButton):
             return
         combo = normalize_global("+".join(seen))
         if combo is None:
-            self.rejected.emit("Esa combinación no es válida (necesita al menos una tecla que no sea Ctrl, Alt, Mayús o Win).")
+            self.rejected.emit("Esa combinación no sirve: necesita al menos una tecla que no sea solo Ctrl, Alt, Mayús o Win.")
             return
         self.captured.emit(combo)
 
 
-class SettingsDialog(QDialog):
-    profile_save = pyqtSignal(str)         # guardar la región fija actual con este nombre
-    profile_load = pyqtSignal(str)         # usar el perfil de este nombre
-    profile_delete = pyqtSignal(str)
+# (clave, texto, ayuda, sufijo, paso)
+LIVE_ROWS = (
+    ("live_sensitivity", "Sensibilidad al cambio", "1 = solo cambios grandes · 10 = cualquier cambio pequeño", "", 1),
+    ("live_stable_ms", "Esperar a que el texto se quede quieto", "Evita leer a medias un texto que aparece letra a letra", " ms", 50),
+    ("live_min_gap_ms", "Separación mínima entre lecturas", "Evita lecturas seguidas si el texto parpadea", " ms", 100),
+)
+PANEL_ROWS = (
+    ("live_history_max", "Lecturas que guarda el historial", "Con «Historial» marcado; las más antiguas se van quitando", "", 5),
+    ("live_panel_hide_s", "Segundos que dura el panel temporal", "Con «Panel temporal» marcado", " s", 1),
+)
 
-    def __init__(self, settings, hotkeys=None, parent=None):
-        super().__init__(parent, Qt.Dialog | Qt.WindowStaysOnTopHint | Qt.WindowCloseButtonHint)
+
+class SettingsDialog(QDialog):
+    changed = pyqtSignal()               # algo cambió: la ventana principal lo aplica
+
+    def __init__(self, settings, parent=None):
+        super().__init__(parent, Qt.Dialog | Qt.WindowCloseButtonHint)
         self.settings = settings
-        self.hotkeys = hotkeys
         self.setWindowTitle("Configuración")
-        self.resize(700, 600)
-        self._buttons = {}                 # clave de ajuste -> KeyCaptureButton
-        self._combos = {}                  # clave -> QComboBox
-        self._spins = {}                   # clave -> QSpinBox
-        self._checks = {}                  # clave -> QCheckBox
+        self.resize(640, 560)
+        self._buttons = {}
+        self._spins = {}
         self.note = QLabel("")
         self.note.setWordWrap(True)
-        self.note.setStyleSheet("color: #b3261e;")
+        self.note.setMinimumHeight(34)
 
-        tabs = QTabWidget()
-        tabs.addTab(self._global_tab(), "Atajos globales")
-        tabs.addTab(self._overlay_tab(), "Teclas de la captura")
-        tabs.addTab(self._capture_tab(), "Captura")
-        tabs.addTab(self._live_tab(), "Modo en vivo")
-        self.tabs = tabs
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self._hotkeys_tab(), "Atajos globales")
+        self.tabs.addTab(self._frozen_tab(), "Captura congelada")
+        self.tabs.addTab(self._live_tab(), "Modo en vivo")
+        self.tabs.addTab(self._look_tab(), "Apariencia")
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.tabs, 1)
+        layout.addWidget(self.note)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        btn = QPushButton("Cerrar")
+        btn.clicked.connect(self.accept)
+        row.addWidget(btn)
+        layout.addLayout(row)
 
-        reset = QPushButton("Restaurar todo")
-        reset.clicked.connect(self._reset_all)
-        close = QPushButton("Cerrar")
-        close.clicked.connect(self.close)
-        bottom = QHBoxLayout()
-        bottom.addWidget(reset)
-        bottom.addStretch(1)
-        bottom.addWidget(close)
-        lay = QVBoxLayout(self)
-        lay.addWidget(tabs, 1)
-        lay.addWidget(self.note)
-        lay.addLayout(bottom)
-        self.settings.changed.connect(lambda _k: self._sync())
+    # ------------------------------------------------------------------ utilidades
+    def _say(self, text: str, error: bool = False):
+        self.note.setStyleSheet("color: #b3261e;" if error else "color: #555;")
+        self.note.setText(text)
 
-    # ------------------------------------------------------------------ pestañas
-    def _rows(self, specs, kind):
+    @staticmethod
+    def _page(*widgets):
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        for w in widgets:
+            lay.addWidget(w) if isinstance(w, QWidget) else lay.addLayout(w)
+        lay.addStretch(1)
+        return page
+
+    @staticmethod
+    def _intro(text: str) -> QLabel:
+        lab = QLabel(text)
+        lab.setWordWrap(True)
+        lab.setStyleSheet("color: #666;")
+        return lab
+
+    def _spin(self, key, suffix, step):
+        default, lo, hi = NUMBERS[key]
+        spin = QSpinBox()
+        spin.setRange(lo, hi)
+        spin.setSingleStep(step)
+        spin.setSuffix(suffix)
+        spin.setValue(get_number(self.settings, key))
+        spin.valueChanged.connect(lambda v, k=key: self._set_number(k, v))
+        self._spins[key] = spin
+        return spin
+
+    def _set_number(self, key, value):
+        self.settings.setValue(key, int(value))
+        self.changed.emit()
+
+    def _number_form(self, rows):
         grid = QGridLayout()
-        grid.setColumnStretch(0, 1)
-        for row, (key, name, help_text) in enumerate(specs):
-            setting = f"hotkey.{key}" if kind == "global" else f"overlay.key.{key}"
-            label = QLabel(f"<b>{name}</b>" + (f"<br><span style='color:gray'>{help_text}</span>" if help_text else ""))
-            label.setWordWrap(True)
-            btn = KeyCaptureButton(kind, self.settings.get(setting))
-            btn.captured.connect(lambda combo, s=setting, k=kind: self._assign(s, k, combo))
-            btn.rejected.connect(self.note.setText)
-            default = QPushButton("Restaurar")
-            default.clicked.connect(lambda _c=False, s=setting: self.settings.reset(s))
-            grid.addWidget(label, row, 0)
-            grid.addWidget(btn, row, 1)
-            grid.addWidget(default, row, 2)
-            self._buttons[setting] = btn
+        grid.setColumnStretch(1, 1)
+        for i, (key, text, help_, suffix, step) in enumerate(rows):
+            grid.addWidget(QLabel(text), i * 2, 0)
+            grid.addWidget(self._spin(key, suffix, step), i * 2, 1, Qt.AlignLeft)
+            grid.addWidget(self._intro(help_), i * 2 + 1, 0, 1, 2)
         return grid
 
-    def _global_tab(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        info = QLabel("Funcionan aunque el juego tenga el foco. Pulsa el botón y luego la combinación: de 1 a 3 teclas "
-                      "(una sola como F9 o Pausa, dos como Ctrl+F9, tres como Ctrl+Mayús+K). Si un juego se "
-                      "interrumpe con Alt o Win, usa una tecla F, Pausa o el teclado numérico.")
-        info.setWordWrap(True)
-        lay.addWidget(info)
-        if self.hotkeys is not None and not self.hotkeys.available:
-            warn = QLabel("⚠ Los atajos globales no están disponibles: falta «pynput» (pip install pynput).")
-            warn.setStyleSheet("color: #b3261e;")
-            lay.addWidget(warn)
-        lay.addLayout(self._rows([(k, n, h) for k, n, h, _d in GLOBAL_ACTIONS], "global"))
-        lay.addStretch(1)
-        return w
-
-    def _overlay_tab(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        info = QLabel("Teclas que se usan con la captura abierta. Pulsa un botón y luego la tecla nueva "
-                      "(vale una sola tecla).")
-        info.setWordWrap(True)
-        lay.addWidget(info)
-        lay.addLayout(self._rows([(k, n, "") for k, n, _d in OVERLAY_ACTIONS], "overlay"))
-        lay.addStretch(1)
-        return w
-
-    def _capture_tab(self) -> QWidget:
-        w = QWidget()
-        form = QFormLayout(w)
-        self.combo_toolbar = self._combo("ui.toolbar", TOOLBAR_CHOICES)
-        form.addRow("Barra de controles\n(modos de OCR, unir líneas):", self.combo_toolbar)
-        self.combo_mode = self._combo("capture.mode", MODE_CHOICES)
-        form.addRow("Al capturar:", self.combo_mode)
-        return w
-
-    def set_mode_locked(self, locked: bool):
-        """Con el modo en vivo en marcha no se cambia de modo: hay que detenerlo primero."""
-        box = self._combos.get("capture.mode")
-        if box is not None:
-            box.setEnabled(not locked)
-            box.setToolTip("Detén el modo en vivo para cambiar de modo." if locked else "")
-
-    def _combo(self, key: str, choices) -> QComboBox:
-        box = QComboBox()
-        for value, text in choices:
-            box.addItem(text, value)
-        box.setCurrentIndex(max(0, box.findData(self.settings.get(key))))
-        box.currentIndexChanged.connect(lambda _i, k=key, b=box: self.settings.set(k, b.currentData()))
-        self._combos[key] = box
-        return box
-
-    def _live_tab(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        info = QLabel("En el modo en vivo se marca una vez la región donde sale el texto (por ejemplo, el cuadro de "
-                      "diálogo de una novela visual) y la app la vigila sin tapar el juego: el texto y la traducción "
-                      "salen en un panel junto a ella. Útil en novelas visuales, cinemáticas y juegos donde la "
-                      "captura congelada interrumpe.")
-        info.setWordWrap(True)
-        lay.addWidget(info)
-        form = QFormLayout()
-        form.addRow("Cuándo leer:", self._combo("live.trigger", TRIGGER_CHOICES))
-        form.addRow("", self._check("live.read_freezes", "«Leer ahora» congela la pantalla un momento (como el modo congelar)"))
-        form.addRow("Texto sobre la región:", self._check("live.layer", "Dibujar el texto encima de la región, sin congelar el juego"))
-        form.addRow("Qué se dibuja encima:", self._combo("live.layer_content", LAYER_CHOICES))
-        form.addRow("Panel:", self._combo("live.panel_show", PANEL_SHOW_CHOICES))
-        form.addRow("Contenido del panel:", self._combo("live.panel_mode", PANEL_MODE_CHOICES))
-        form.addRow("", self._check("live.panel_original", "Mostrar también el texto original en el panel (si no, solo la traducción)"))
-        reset_size = QPushButton("Tamaño automático del panel")
-        reset_size.setToolTip("El tamaño del panel se cambia arrastrando su esquina inferior derecha")
-        reset_size.clicked.connect(lambda: (self.settings.reset("live.panel_w"), self.settings.reset("live.panel_h")))
-        form.addRow("", reset_size)
-        for key, text, tip, suffix in LIVE_NUMBERS:
-            spin = QSpinBox()
-            lo, hi = RANGES[key]
-            spin.setRange(lo, hi)
-            spin.setSuffix(suffix)
-            spin.setValue(self.settings.get(key))
-            spin.setToolTip(tip)
-            spin.valueChanged.connect(lambda v, k=key: self.settings.set(k, v))
-            self._spins[key] = spin
-            form.addRow(text + ":", spin)
-        form.addRow("Lado del panel:", self._combo("live.panel_side", SIDE_CHOICES))
-        form.addRow("Marco:", self._combo("live.show_frame", FRAME_CHOICES))
-        lay.addLayout(form)
-        lay.addWidget(self._profiles_box())
-        lay.addStretch(1)
-        area = QScrollArea()                 # son muchas opciones: la pestaña se desplaza
-        area.setWidgetResizable(True)
-        area.setFrameShape(QScrollArea.NoFrame)
-        area.setWidget(w)
-        return area
-
-    def _check(self, key: str, text: str) -> QCheckBox:
-        box = QCheckBox(text)
-        box.setChecked(bool(self.settings.get(key)))
-        box.toggled.connect(lambda on, k=key: self.settings.set(k, bool(on)))
-        self._checks[key] = box
-        return box
-
-    def _profiles_box(self) -> QGroupBox:
-        box = QGroupBox("Perfiles por juego (región, idioma y modo de OCR)")
-        lay = QVBoxLayout(box)
-        self.profile_list = QListWidget()
-        self.profile_list.setMaximumHeight(90)
-        self.profile_list.itemDoubleClicked.connect(lambda item: self.profile_load.emit(item.text()))
+    def _reset_button(self, keys, text="Restablecer esta pestaña"):
+        btn = QPushButton(text)
+        btn.clicked.connect(lambda: self._reset_numbers(keys))
         row = QHBoxLayout()
-        save = QPushButton("Guardar la región actual…")
-        load = QPushButton("Usar")
-        delete = QPushButton("Eliminar")
-        save.clicked.connect(self._save_profile)
-        load.clicked.connect(lambda: self._with_profile(self.profile_load))
-        delete.clicked.connect(lambda: self._with_profile(self.profile_delete))
-        for b in (save, load, delete):
-            row.addWidget(b)
-        lay.addWidget(self.profile_list)
-        lay.addLayout(row)
-        self._fill_profiles()
-        return box
+        row.addStretch(1)
+        row.addWidget(btn)
+        return row
 
-    def _fill_profiles(self):
-        self.profile_list.clear()
-        self.profile_list.addItems(sorted(profiles.load(self.settings)))
+    def _reset_numbers(self, keys):
+        for key in keys:
+            self._spins[key].setValue(NUMBERS[key][0])        # dispara valueChanged y guarda
+        self._say("Valores restablecidos.")
 
-    def _save_profile(self):
-        name, ok = QInputDialog.getText(self, "Nuevo perfil", "Nombre del juego:")
-        if ok and name.strip():
-            self.profile_save.emit(name.strip())
+    # ------------------------------------------------------------------ pestañas
+    def _hotkeys_tab(self):
+        grid = QGridLayout()
+        grid.setColumnStretch(0, 1)
+        saved = load_bindings(self.settings)
+        for i, (action, (_default, name)) in enumerate(ACTIONS.items()):
+            grid.addWidget(QLabel(name), i, 0)
+            btn = KeyCaptureButton(saved.get(action, ""))
+            btn.captured.connect(lambda combo, a=action: self._set_hotkey(a, combo))
+            btn.rejected.connect(lambda why: self._say(why, True))
+            self._buttons[action] = btn
+            grid.addWidget(btn, i, 1)
+            clear = QPushButton("Quitar")
+            clear.setToolTip("Dejar esta acción sin atajo")
+            clear.clicked.connect(lambda _c=False, a=action: self._set_hotkey(a, ""))
+            grid.addWidget(clear, i, 2)
+        reset = QPushButton("Restablecer atajos")
+        reset.clicked.connect(self._reset_hotkeys)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(reset)
+        return self._page(
+            self._intro("Funcionan con el juego en primer plano. Pulsa un botón y teclea la combinación (de 1 a 3 teclas: "
+                        "por ejemplo F9, Ctrl+Mayús+K o Z+X); se guarda al soltar las teclas. Esc cancela."),
+            grid, row)
 
-    def _with_profile(self, signal):
-        item = self.profile_list.currentItem()
-        if item is not None:
-            signal.emit(item.text())
+    def _set_hotkey(self, action, combo):
+        if combo:
+            for other, value in load_bindings(self.settings).items():
+                if other != action and value == combo:
+                    self._say(f"«{global_label(combo)}» ya se usa para «{ACTIONS[other][1]}». Quita o cambia esa primero.", True)
+                    return
+        self.settings.setValue(f"hk/{action}", combo)
+        self._buttons[action].set_value(combo)
+        if combo and is_risky(combo):
+            self._say("Ojo: una tecla suelta también le llega al juego (los atajos no la bloquean). "
+                      "Es más seguro usarla con Ctrl, Alt o Mayús.")
+        else:
+            self._say("Atajo guardado.")
+        self.changed.emit()
 
-    def refresh_profiles(self):
-        self._fill_profiles()
+    def _reset_hotkeys(self):
+        for action, combo in default_bindings().items():
+            self.settings.setValue(f"hk/{action}", combo)
+            self._buttons[action].set_value(combo)
+        self._say("Atajos restablecidos.")
+        self.changed.emit()
 
-    # ------------------------------------------------------------------ cambios
-    def _assign(self, setting: str, kind: str, combo: str):
-        norm = normalize_global(combo) if kind == "global" else normalize_overlay(combo)
-        if not norm:
-            self.note.setText("Esa combinación no es válida.")
-            return
-        prefix = "hotkey." if kind == "global" else "overlay.key."
-        for other, btn in self._buttons.items():
-            if other != setting and other.startswith(prefix) and btn.value == norm:
-                self.note.setText(f"«{btn.label_of(norm)}» ya está asignada a otra acción. Cambia esa primero.")
-                return
-        self.note.setText("")
-        if kind == "global" and is_risky(norm):
-            self.note.setText(f"Aviso: «{global_label(norm)}» es una tecla normal y también le llegará al juego. "
-                              "Mejor una tecla F, Pausa o una combinación.")
-        self.settings.set(setting, norm)
+    # --- teclas con el foco ---
+    def _keys_group(self, scope, title, intro):
+        self._key_buttons = getattr(self, "_key_buttons", {})
+        grid = QGridLayout()
+        grid.setColumnStretch(0, 1)
+        saved = load_keys(self.settings, scope)
+        for i, (action, (_d, name)) in enumerate(KEY_SCOPES[scope].items()):
+            grid.addWidget(QLabel(name), i, 0)
+            btn = SingleKeyButton(saved.get(action, ""))
+            btn.captured.connect(lambda combo, sc=scope, a=action: self._set_key(sc, a, combo))
+            self._key_buttons[(scope, action)] = btn
+            grid.addWidget(btn, i, 1)
+            clear = QPushButton("Quitar")
+            clear.clicked.connect(lambda _c=False, sc=scope, a=action: self._set_key(sc, a, ""))
+            grid.addWidget(clear, i, 2)
+        reset = QPushButton("Restablecer teclas")
+        reset.clicked.connect(lambda: self._reset_keys(scope))
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(reset)
+        return [QLabel(f"<b>{title}</b>"), self._intro(intro), grid, row]
 
-    def _reset_all(self):
-        self.settings.reset_all()
-        self.note.setText("")
+    def _set_key(self, scope, action, combo):
+        if combo:
+            for other, value in load_keys(self.settings, scope).items():
+                if other != action and value == combo:
+                    self._say(f"«{combo}» ya se usa para «{KEY_SCOPES[scope][other][1]}». Quita o cambia esa primero.", True)
+                    return
+        self.settings.setValue(f"key/{scope}/{action}", combo)
+        self._key_buttons[(scope, action)].set_value(combo)
+        self._say("Tecla guardada." if combo else "Acción sin tecla (los atajos globales siguen funcionando).")
+        self.changed.emit()
 
-    def _sync(self):
-        for setting, btn in self._buttons.items():
-            btn.set_value(self.settings.get(setting))
-        for key, box in self._combos.items():
-            box.blockSignals(True)
-            box.setCurrentIndex(max(0, box.findData(self.settings.get(key))))
-            box.blockSignals(False)
-        for key, spin in self._spins.items():
-            spin.blockSignals(True)
-            spin.setValue(self.settings.get(key))
-            spin.blockSignals(False)
-        for key, box in self._checks.items():
-            box.blockSignals(True)
-            box.setChecked(bool(self.settings.get(key)))
-            box.blockSignals(False)
-        self._fill_profiles()
+    def _reset_keys(self, scope):
+        for action, key in default_keys(scope).items():
+            self.settings.setValue(f"key/{scope}/{action}", key)
+            self._key_buttons[(scope, action)].set_value(key)
+        self._say("Teclas restablecidas.")
+        self.changed.emit()
+
+    def _frozen_tab(self):
+        return self._page(*self._keys_group(
+            "frozen", "Teclas con la captura abierta",
+            "Se usan con la pantalla congelada en primer plano. Una tecla sola o con Ctrl, Alt o Mayús. "
+            "Pulsa un botón y la tecla nueva; Esc cancela. El clic derecho (elegir otra región) no se cambia."))
+
+    def _live_tab(self):
+        keys = [r[0] for r in LIVE_ROWS + PANEL_ROWS]
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
+        for item in self._keys_group("live", "Teclas con la región o el panel en foco",
+                                     "Haz clic en la región o el panel para darle el foco; desde el juego usa los atajos globales."):
+            lay.addWidget(item) if isinstance(item, QWidget) else lay.addLayout(item)
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        lay.addWidget(line)
+        lay.addWidget(QLabel("<b>Lectura automática</b>"))
+        lay.addLayout(self._number_form(LIVE_ROWS))
+        lay.addWidget(QLabel("<b>Panel</b>"))
+        lay.addLayout(self._number_form(PANEL_ROWS))
+        lay.addLayout(self._reset_button(keys, "Restablecer estos valores"))
+        lay.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(inner)
+        return scroll
+
+    def _look_tab(self):
+        font = self._spin("live_panel_font", " px", 1)
+        opacity = QSlider(Qt.Horizontal)
+        opacity.setRange(NUMBERS["live_text_opacity"][1], NUMBERS["live_text_opacity"][2])
+        opacity.setValue(get_number(self.settings, "live_text_opacity"))
+        value = QLabel(f"{opacity.value()} %")
+        opacity.valueChanged.connect(lambda v: (value.setText(f"{v} %"), self._set_number("live_text_opacity", v)))
+        self._opacity = opacity
+        row = QHBoxLayout()
+        row.addWidget(opacity, 1)
+        row.addWidget(value)
+        style = QComboBox()
+        style.addItem("Ventana junto a la región (siempre visible)", False)
+        style.addItem("Viñeta: una pestaña que se abre al pasar el mouse", True)
+        style.setCurrentIndex(1 if self.settings.value("live_panel_tab", False) in (True, "true", "1", 1) else 0)
+        style.currentIndexChanged.connect(lambda _i: (self.settings.setValue("live_panel_tab", bool(style.currentData())),
+                                                       self.changed.emit()))
+        self._panel_style = style
+        bar = QComboBox()
+        bar.addItem("Viñeta: una píldora «あ Modo ▾» que se abre al pasar el mouse", "hover")
+        bar.addItem("Siempre visible", "always")
+        bar.addItem("Oculta (solo con las teclas 1 / 2 / 3)", "hidden")
+        bar.setCurrentIndex(max(0, bar.findData(get_ocr_bar(self.settings))))
+        bar.currentIndexChanged.connect(lambda _i: (self.settings.setValue("ocr_bar", bar.currentData()), self.changed.emit()))
+        self._ocr_bar = bar
+        form = QFormLayout()
+        form.addRow("Panel de traducción", style)
+        form.addRow("Barra de modos OCR (japonés)", bar)
+        form.addRow("Tamaño de letra del panel", font)
+        form.addRow("Opacidad del fondo del texto sobre la región", row)
+        reset = QPushButton("Restablecer esta pestaña")
+        reset.clicked.connect(lambda: (font.setValue(NUMBERS["live_panel_font"][0]), style.setCurrentIndex(0), bar.setCurrentIndex(0),
+                                       opacity.setValue(NUMBERS["live_text_opacity"][0]), self._say("Valores restablecidos.")))
+        rrow = QHBoxLayout()
+        rrow.addStretch(1)
+        rrow.addWidget(reset)
+        return self._page(
+            self._intro("En modo viñeta el panel se pliega a una pestaña pequeña junto a la región («● Traducción» avisa de una lectura nueva) y se abre al pasar el mouse. "
+                        "La opacidad menor deja ver un poco el original a través del texto dibujado sobre la región "
+                        "(el texto sigue nítido)."),
+            form, rrow)

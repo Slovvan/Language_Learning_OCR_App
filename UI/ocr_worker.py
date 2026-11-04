@@ -3,7 +3,7 @@ from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
 
 import Translator.japanese as japanese
 import Translator.languages as languages
-from OCR.ocr_engine import OcrEngine
+from OCR.ocr_engine import OcrEngine, merge_rows
 from Translator.translator import Translator
 
 
@@ -46,7 +46,10 @@ class OcrWorker(QObject):
             self.ocr_mode = japanese.Mode(ocr_mode)
         except ValueError:
             self.ocr_mode = japanese.Mode.NORMAL
-        if language != self.language or (self._translator is None and not self._translator_error):
+        if not languages.get_pack(language).has_ocr_modes:
+            self.ocr_mode = japanese.Mode.NORMAL     # los modos (kana / vertical) son solo del japonés: no se arrastran a otros idiomas
+        reload = language != self.language or (self._translator is None and not self._translator_error)
+        if reload:
             self.language = language
             if self._engine is not None:
                 want = languages.get_pack(language).ocr_lang
@@ -57,7 +60,7 @@ class OcrWorker(QObject):
                     except Exception as exc:  # noqa: BLE001
                         self.failed.emit(f"No se pudo cargar el OCR: {exc}")
                 self._load_translator()
-        if self._engine is not None:
+        if self._engine is not None and reload:      # solo cambió el modo de OCR: no hay nada que recargar ni avisar
             self.ready.emit()
             if self._translator is None:
                 self.failed.emit(f"Traductor no disponible: {self._translator_error}")
@@ -90,6 +93,8 @@ class OcrWorker(QObject):
             if languages.get_pack(self.language).has_ocr_modes:   # japonés: filas, furigana, confusiones
                 res = japanese.process(res, self.ocr_mode)
                 res = self._repair_japanese(res)
+            else:                                                 # inglés, francés...: palabras sueltas de una fila -> una línea
+                res = merge_rows(res)
             self.result.emit(res)
             if res.text.strip():
                 if self._translator is None:

@@ -20,7 +20,9 @@ from PyQt5.QtGui import (QColor, QFont, QFontMetrics, QPainter, QPen, QRegion,
 from PyQt5.QtWidgets import QApplication, QWidget
 
 import Translator.languages as languages
+from UI.app_settings import default_keys, key_action
 from UI.capture import bgr_to_qpixmap
+from UI.ocr_modes import ModeBar
 from UI.word_popup import iter_words
 
 SELECT, READING, TEXT = range(3)          # estados de la capa
@@ -128,6 +130,7 @@ class CaptureOverlay(QWidget):
     wheel_moved = pyqtSignal(int)                  # rueda del mouse: desplaza la ventanita del diccionario
     word_clicked = pyqtSignal(str, str, int)       # palabra, compuesto, posición en `self.text`
     merge_toggled = pyqtSignal()                   # tecla M
+    mode_requested = pyqtSignal(str)               # modo de OCR del japonés (barra o teclas 1 / 2 / 3)
     region_chosen = pyqtSignal(object, object)     # modo en vivo: caja en px reales (x0,y0,x1,y1) y QRect global lógico
     closed = pyqtSignal()                          # se cerró (Esc o cancelada la selección)
 
@@ -154,6 +157,7 @@ class CaptureOverlay(QWidget):
         self._show_translation = True
         self._show_layer = True
         self._toast = ""
+        self.keys = default_keys("frozen")
         self._panel = None                         # (QRectF, QTextDocument) del panel de traducción
         self._hover_key = None                     # (línea, palabra) bajo el mouse
         self._hover_pending = None
@@ -161,6 +165,9 @@ class CaptureOverlay(QWidget):
         self._hover_shown = False
         self._press = None
 
+        self.mode_bar = ModeBar(self)               # solo japonés; flota arriba, debajo del aviso
+        self.mode_bar.mode_requested.connect(self.mode_requested)
+        self.mode_bar.layout_changed.connect(self._place_mode_bar)
         self._hover_timer = QTimer(self)
         self._hover_timer.setSingleShot(True)
         self._hover_timer.setInterval(hover_delay_ms)
@@ -174,6 +181,11 @@ class CaptureOverlay(QWidget):
     @property
     def state(self) -> int:
         return self._state
+
+    @property
+    def can_reprocess(self) -> bool:
+        """¿Hay una región ya elegida (leída o sin texto) que se pueda volver a procesar?"""
+        return self._state != SELECT and self._crop is not None
 
     def open(self, frame: np.ndarray, select_only: bool = False):
         """Muestra la captura congelada a pantalla completa y empieza la selección."""
@@ -372,6 +384,7 @@ class CaptureOverlay(QWidget):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
+        self._place_mode_bar()
         self._rebuild_panel()
 
     # ------------------------------------------------------------------ palabra bajo el mouse
@@ -469,20 +482,53 @@ class CaptureOverlay(QWidget):
         super().leaveEvent(e)
 
     def keyPressEvent(self, e):
-        key = e.key()
-        if key == Qt.Key_Escape:
+        action = key_action(self.keys, e.modifiers(), e.key())
+        if action == "close":
             self.dismiss()
-        elif self._state == TEXT and key == Qt.Key_T:
+        elif self._state == TEXT and action == "translation":
             self._show_translation = not self._show_translation
             self.update()
-        elif self._state == TEXT and key == Qt.Key_O:
+        elif self._state == TEXT and action == "original":
             self._show_layer = not self._show_layer
             self._end_hover()
             self.update()
-        elif self._state in (READING, TEXT) and key == Qt.Key_M:
+        elif self._state in (READING, TEXT) and action == "merge":
             self.merge_toggled.emit()
+        elif action in ("mode_normal", "mode_kana", "mode_vertical") and self.mode_bar._available:
+            self.mode_requested.emit(action[5:])
+        elif e.key() == Qt.Key_Escape and not self.keys.get("close"):
+            self.dismiss()                                 # Esc siempre cancela, aunque se le haya quitado la tecla
         else:
             super().keyPressEvent(e)
+
+    def set_keys(self, keys: dict):
+        self.keys = dict(keys)
+        self.mode_bar.set_keys(self.keys)
+        self.update()
+
+    def set_modes(self, available: bool, mode: str, policy: str):
+        """Barra de modos de OCR: solo si el idioma las tiene (japonés)."""
+        self.mode_bar.set_policy(policy)
+        self.mode_bar.set_available(available)
+        self.mode_bar.set_mode(mode)
+
+    def _place_mode_bar(self):
+        bar = self.mode_bar
+        bar.move(max(8, (self.width() - bar.width()) // 2), 56)
+        bar.raise_()
+
+    def _hint_text(self) -> str:
+        k = self.keys
+        parts = ["Clic: guardar palabra"]
+        for action, name in (("translation", "traducción"), ("original", "original"), ("merge", "unir líneas")):
+            if k.get(action):
+                parts.append(f"{k[action]} {name}")
+        if self.mode_bar._available and all(k.get(f"mode_{m}") for m in ("normal", "kana", "vertical")):
+            parts.append(f"{k['mode_normal']}/{k['mode_kana']}/{k['mode_vertical']} modo OCR")
+        parts.append("Clic der.: otra región")
+        if k.get("close"):
+            parts.append(k["close"] + " cierra")
+        return " · ".join(parts)
 
     # ------------------------------------------------------------------ dibujo
     def _hole(self):
@@ -523,7 +569,7 @@ class CaptureOverlay(QWidget):
             p.restore()
 
         hint = {SELECT: HINT_SELECT_LIVE if self.select_only else HINT_SELECT, READING: HINT_READING,
-                TEXT: HINT_TEXT if self._lines else HINT_EMPTY}[self._state]
+                TEXT: self._hint_text() if self._lines else HINT_EMPTY}[self._state]
         self._pill(p, hint, 14)
         if self._toast:
             self._pill(p, self._toast, self.height() - 50, QColor(27, 107, 47, 235))

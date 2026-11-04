@@ -24,7 +24,9 @@ from PyQt5.QtGui import QGuiApplication, QColor, QFont, QFontMetrics, QPainter, 
 from PyQt5.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QGridLayout, QPushButton, QSizeGrip, QSizePolicy, QTextBrowser, QWidget,
                              QVBoxLayout)
 
+from UI.app_settings import get_number, hotkey_label, key_action, load_keys
 from UI.capture import bgr_to_qpixmap, grab_region, grab_screen
+from UI.ocr_modes import ModeBar
 from UI.live import LiveController, signature
 from UI.live_ui_helpers import exclude_from_capture
 from UI.overlay import MARK, PENDING, sample_colors, uniform_font
@@ -35,9 +37,6 @@ GAP = 8                        # separación entre la región y el panel
 GRAB = 8                       # margen (px) para agarrar los bordes de la región al editarla
 MIN_REGION = 24                # tamaño mínimo (px lógicos) de la región
 PANEL_MIN = QSize(260, 110)
-HISTORY_MAX = 50               # entradas que se guardan en el historial del panel
-HISTORY_SHOW = 30              # entradas que se muestran con «Historial» activo
-PANEL_TEMP_MS = 6000           # «Panel temporal»: lo que dura visible tras una lectura
 
 
 def compute_panel_rect(region: QRect, size: QSize, screen: QRect) -> QRect:
@@ -85,9 +84,10 @@ def resize_rect(orig: QRect, zone: str, delta: QPoint, bounds: QRect = None) -> 
 
 
 class _Line:
-    def __init__(self, text, offset, rect, patch, bg, fg, font, words):
+    def __init__(self, text, offset, rect, patch, bg, fg, font, words, vertical=False, cell=0.0):
         self.text, self.offset, self.rect, self.patch = text, offset, rect, patch
         self.bg, self.fg, self.font, self.words = bg, fg, font, words
+        self.vertical, self.cell = vertical, cell     # columna de texto vertical: cada carácter en su celda, de arriba abajo
 
 
 class FreezeScreen(QWidget):
@@ -124,7 +124,7 @@ class RegionLayer(QWidget):
     hover_ended = pyqtSignal()
     wheel_moved = pyqtSignal(int)
     word_clicked = pyqtSignal(str, str, int, str)       # palabra, compuesto, posición, texto completo
-    key_pressed = pyqtSignal(int)                       # T / O / M / Esc con la región en foco
+    key_pressed = pyqtSignal(int, int)                  # tecla y modificadores, con la región en foco
     select_requested = pyqtSignal()                     # clic derecho: elegir otra región
     region_edited = pyqtSignal(QRect)                   # se movió o estiró la región (al soltar el mouse)
     edit_finished = pyqtSignal()                        # doble clic dentro: terminar la edición
@@ -142,7 +142,9 @@ class RegionLayer(QWidget):
         self.bounds = None                  # límites (la pantalla) para mover la región
         self._drag = None                   # (zona, posición global inicial, región inicial)
         self._lines = []
+        self._v_cell = 0.0                  # alto de celda del texto vertical leído (0 = el texto no es vertical)
         self._translation = ""              # última traducción (para dibujarla sobre la región si se pide)
+        self.opacity = 1.0                  # opacidad del fondo del texto dibujado
         self.over = False                   # «traducción sobre la región»: se dibuja ella y no el texto reconocido
         self._fallback = ""                  # traducción, si no hay posiciones del texto (o es vertical)
         self._bg = QColor(20, 20, 24)
@@ -166,7 +168,7 @@ class RegionLayer(QWidget):
 
     def clear(self):
         self._end_hover()
-        self._lines, self._fallback, self._translation = [], "", ""
+        self._lines, self._fallback, self._translation, self._v_cell = [], "", "", 0.0
         self.update()
 
     def set_editing(self, on: bool):
@@ -213,7 +215,7 @@ class RegionLayer(QWidget):
         self.update()
 
     def keyPressEvent(self, e):
-        self.key_pressed.emit(e.key())
+        self.key_pressed.emit(e.key(), int(e.modifiers()))
 
     def set_result(self, res, image, region: QRect):
         """Dibuja `res` (ocr_engine.OcrResult de `image`, el recorte de la región) sobre el original."""
@@ -221,9 +223,21 @@ class RegionLayer(QWidget):
         h, w = image.shape[:2]
         sx, sy = w / max(1, region.width()), h / max(1, region.height())
         boxes = getattr(res, "boxes", None) or []
-        if not boxes or getattr(res, "vertical", False) or len(boxes) < len(res.lines):
+        if not boxes or len(boxes) < len(res.lines):
             self._fallback_colors(image)
             return                                             # la traducción llega después y se dibuja entonces
+        if getattr(res, "vertical", False):                    # japonés vertical: columnas dibujadas en su sitio, como en la captura
+            self._fallback_colors(image)
+            offset = 0
+            for (text, _score), box in zip(res.lines, boxes):
+                rect = QRectF(box[0] / sx, box[1] / sy, (box[2] - box[0]) / sx, (box[3] - box[1]) / sy)
+                bg, fg = sample_colors(image, box)
+                self._add_vertical(text, rect, bg, fg, offset)
+                offset += len(text) + 1
+            cells = sorted(l.cell for l in self._lines)
+            self._v_cell = cells[len(cells) // 2] if cells else 0.0
+            self.update()
+            return
         entries = []
         for (text, _score), box in zip(res.lines, boxes):
             rect = QRectF(box[0] / sx, box[1] / sy, (box[2] - box[0]) / sx, (box[3] - box[1]) / sy)
@@ -241,6 +255,16 @@ class RegionLayer(QWidget):
             offset += len(text) + 1
         self.update()
 
+    def _add_vertical(self, text, rect, bg, fg, offset):
+        cell = max(8.0, min(rect.width(), rect.height() / max(1, len(text))))
+        font = QFont(self.font())
+        font.setStyleStrategy(QFont.PreferAntialias)
+        font.setHintingPreference(QFont.PreferNoHinting)
+        font.setPixelSize(max(8, int(cell * 0.82)))
+        box = QRectF(rect.center().x() - cell / 2, rect.top(), cell, max(cell * len(text), rect.height()))
+        words = [(st, en, wd, c, box.top() + st * cell, box.top() + en * cell) for st, en, wd, c in iter_words(text)]
+        self._lines.append(_Line(text, offset, box, box.adjusted(-3, -2, 3, 2), bg, fg, font, words, True, cell))
+
     def _fallback_colors(self, image):
         h, w = image.shape[:2]
         self._bg, self._fg = sample_colors(image, (0, 0, w, h))
@@ -250,6 +274,10 @@ class RegionLayer(QWidget):
         self._translation = text
         if not self._lines:
             self._fallback = text
+        self.update()
+
+    def set_opacity(self, value: float):
+        self.opacity = max(0.0, min(1.0, float(value)))
         self.update()
 
     def set_over(self, on: bool):
@@ -270,8 +298,9 @@ class RegionLayer(QWidget):
             return None
         for li, line in enumerate(self._lines):
             if line.patch.contains(QPointF(pos)):
+                coord = pos.y() if line.vertical else pos.x()
                 for wi, w in enumerate(line.words):
-                    if w[4] - 1 <= pos.x() <= w[5] + 1:
+                    if w[4] - 1 <= coord <= w[5] + 1:
                         return li, wi
         return None
 
@@ -291,7 +320,8 @@ class RegionLayer(QWidget):
         if hit:
             line = self._lines[hit[0]]
             w = line.words[hit[1]]
-            r = QRectF(w[4], line.patch.top(), w[5] - w[4], line.patch.height()).toAlignedRect()
+            r = (QRectF(line.patch.left(), w[4], line.patch.width(), w[5] - w[4]) if line.vertical
+                 else QRectF(w[4], line.patch.top(), w[5] - w[4], line.patch.height())).toAlignedRect()
             self._hover_pending = (line.text, w[0], w[2], w[3], e.globalPos(),
                                    QRect(self.mapToGlobal(r.topLeft()), r.size()))
             self._timer.start()
@@ -362,6 +392,59 @@ class RegionLayer(QWidget):
             w = line.words[hit[1]]
             self.word_clicked.emit(w[2], w[3], line.offset + w[0], self.text)
 
+    def _vertical_layout(self, text: str):
+        """(celda, columnas): la traducción en columnas de derecha a izquierda, con celdas como las del original
+        (más pequeñas si no cabe). Cada columna es un trozo de texto."""
+        w, h = self.width() - 12, self.height() - 12
+        cell = max(8, int(self._v_cell))
+        while True:
+            rows = max(1, int(h // cell))
+            cols = []
+            for para in text.split("\n"):
+                para = para.strip()
+                while para:
+                    cut = rows
+                    if len(para) > rows and para[rows] != " " and " " in para[:rows]:
+                        cut = para.rindex(" ", 0, rows)           # no se parte una palabra si cabe entera en otra columna
+                    cols.append(para[:cut].rstrip())
+                    para = para[cut:].lstrip()
+            if len(cols) * cell <= w or cell <= 8:
+                return cell, cols
+            cell -= 1
+
+    def _paint_vertical_translation(self, p, text: str):
+        cell, cols = self._vertical_layout(text)
+        font = QFont(self.font())
+        font.setStyleStrategy(QFont.PreferAntialias)
+        font.setHintingPreference(QFont.PreferNoHinting)
+        font.setPixelSize(max(8, int(cell * 0.82)))
+        p.setFont(font)
+        p.setPen(self._fg)
+        x = self.width() - 6 - cell                              # la primera columna va a la derecha
+        for col in cols:
+            for i, ch in enumerate(col):
+                p.drawText(QRectF(x, 6 + i * cell, cell, cell), Qt.AlignCenter, ch)
+            x -= cell
+
+    def _paint_vertical(self, p, li, line):
+        r = line.rect
+        for wi, w in enumerate(line.words):
+            span = QRectF(r.left() - 1, w[4], r.width() + 2, w[5] - w[4])
+            key = (line.offset + w[0], line.offset + w[1])
+            if key in self._marks:
+                p.fillRect(span, MARK)
+            elif key in self._pending:
+                p.fillRect(span, PENDING)
+            if self._hover_key == (li, wi):
+                p.fillRect(span, QColor(255, 255, 255, 70))
+                p.setPen(QPen(line.fg, 1))
+                p.drawLine(QPointF(span.right() - 1, span.top()), QPointF(span.right() - 1, span.bottom()))
+        p.setFont(line.font)
+        p.setPen(line.fg)
+        for i, ch in enumerate(line.text):
+            ch = "｜" if ch == "ー" else ch                      # la barra larga va vertical
+            p.drawText(QRectF(r.left(), r.top() + i * line.cell, r.width(), line.cell), Qt.AlignCenter, ch)
+
     # ------------------------------------------------------------------ dibujo
     def paintEvent(self, _):
         p = QPainter(self)
@@ -372,15 +455,24 @@ class RegionLayer(QWidget):
         over = self._showing_translation()
         shown = self._translation if over else self._fallback
         if shown and self.text_visible and not self.editing and not self.stale:
-            p.fillRect(self.rect(), QColor(self._bg.red(), self._bg.green(), self._bg.blue(), 245))
+            p.fillRect(self.rect(), QColor(self._bg.red(), self._bg.green(), self._bg.blue(), int(245 * self.opacity)))
+            if over and self._v_cell:                            # el original era vertical: la traducción también, sin pasarse de su tamaño
+                self._paint_vertical_translation(p, shown)
+                shown = ""
+        if shown and self.text_visible and not self.editing and not self.stale:
             font = QFont(self.font())
             font.setPixelSize(max(12, min(32, int(self.height() * 0.4))))
             p.setFont(font)
             p.setPen(self._fg)
             p.drawText(QRectF(self.rect()).adjusted(10, 6, -10, -6), Qt.AlignVCenter | Qt.TextWordWrap, shown)
         for li, line in enumerate(self._lines if self.text_visible and not self.editing and not self.stale and not over else []):
-            p.fillRect(line.patch, line.bg)
+            bg = QColor(line.bg)
+            bg.setAlpha(int(255 * self.opacity))
+            p.fillRect(line.patch, bg)
             fm = QFontMetrics(line.font)
+            if line.vertical:
+                self._paint_vertical(p, li, line)
+                continue
             for wi, w in enumerate(line.words):
                 span = QRectF(w[4] - 1, line.patch.top() + 1, w[5] - w[4] + 2, line.patch.height() - 2)
                 key = (line.offset + w[0], line.offset + w[1])
@@ -417,7 +509,7 @@ class RegionLayer(QWidget):
 PANEL_STYLE = """
 LivePanel { background: rgb(18, 20, 26); border: 1px solid rgba(255,255,255,70); border-radius: 8px; }
 QLabel#head { color: #9aa3b2; font-size: 12px; }
-QTextBrowser { background: transparent; border: none; color: #b9e6ff; font-size: 16px; }
+QTextBrowser { background: transparent; border: none; color: #b9e6ff; font-size: %PX%px; }
 QPushButton { color: #f2f2f2; background: rgba(255,255,255,18); border: 1px solid rgba(255,255,255,50);
     border-radius: 5px; padding: 3px 9px; font-size: 13px; }
 QPushButton:hover { background: rgba(255,255,255,45); }
@@ -437,13 +529,16 @@ class LivePanel(QFrame):
     clear_requested = pyqtSignal()
     entry_deleted = pyqtSignal(int)              # ✕ de una entrada del historial
     size_changed = pyqtSignal(QSize)             # el usuario le cambió el tamaño
-    key_pressed = pyqtSignal(int)
+    key_pressed = pyqtSignal(int, int)
+    entered = pyqtSignal()
+    left = pyqtSignal()
 
     def __init__(self):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setObjectName("LivePanel")
         self.setAttribute(Qt.WA_ShowWithoutActivating)
-        self.setStyleSheet(PANEL_STYLE)
+        self._px = 16
+        self.setStyleSheet(PANEL_STYLE.replace("%PX%", str(self._px)))
         self.setMinimumSize(PANEL_MIN)
         self._region = QRect()
         self._user_size = None                   # tamaño que dejó el usuario
@@ -510,6 +605,12 @@ class LivePanel(QFrame):
         head_row.addWidget(self.btn_clear)
         head_row.addWidget(self.btn_close)
         lay.addLayout(head_row)
+        self.mode_bar = ModeBar()                    # modos de OCR del japonés (se esconde con otros idiomas)
+        mode_row = QHBoxLayout()
+        mode_row.setContentsMargins(0, 0, 0, 0)
+        mode_row.addWidget(self.mode_bar)
+        mode_row.addStretch(1)
+        lay.addLayout(mode_row)
         lay.addWidget(self.view, 1)
         lay.addLayout(row)
         self._placing = False
@@ -551,7 +652,19 @@ class LivePanel(QFrame):
             self.size_changed.emit(self.size())
 
     def keyPressEvent(self, e):
-        self.key_pressed.emit(e.key())
+        self.key_pressed.emit(e.key(), int(e.modifiers()))
+
+    def enterEvent(self, e):
+        self.entered.emit()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self.left.emit()
+        super().leaveEvent(e)
+
+    def set_font_px(self, px: int):
+        self._px = int(px)
+        self.setStyleSheet(PANEL_STYLE.replace("%PX%", str(self._px)))
 
     def _anchor(self, url):
         text = url.toString()
@@ -566,13 +679,13 @@ class LivePanel(QFrame):
             latest = i == len(ordered) - 1
             body = []
             if show_original:
-                color, size = ("#9fb0c6", 14) if latest else ("#6f7a8a", 12)
+                color, size = ("#9fb0c6", self._px - 2) if latest else ("#6f7a8a", self._px - 4)
                 body.append(f"<div style='color:{color}; font-size:{size}px'>"
                             + _html.escape(e["original"]).replace("\n", "<br>") + "</div>")
             tr = _html.escape(e["translation"]).replace("\n", "<br>") if e["translation"] else "<i style='color:#6f7a8a'>…</i>"
-            color, size = ("#d6f1ff", 17) if latest else ("#7fa3b8", 14)
+            color, size = ("#d6f1ff", self._px + 1) if latest else ("#7fa3b8", self._px - 2)
             body.append(f"<div style='color:{color}; font-size:{size}px'>{tr}</div>")
-            cross = ("<a href='del:%d' style='color:#8a93a3; text-decoration:none; font-size:15px'>&#10005;</a>" % e["id"]
+            cross = ("<a href='del:%d' style='color:#8a93a3; text-decoration:none; font-size:%dpx'>&#10005;</a>" % (e["id"], self._px)
                      if deletable else "")
             bg = " bgcolor='#223247'" if latest else ""
             pad = 8 if latest else 3
@@ -615,6 +728,46 @@ class LivePanel(QFrame):
         super().mouseReleaseEvent(e)
 
 
+class PanelTab(QWidget):
+    """La «viñeta»: una pestaña pequeña junto a la región; al pasar el mouse se abre el panel."""
+    entered = pyqtSignal()
+    SIZE = QSize(124, 26)
+
+    def __init__(self):
+        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setFixedSize(self.SIZE)
+        self._new = False
+        self.setCursor(Qt.PointingHandCursor)
+
+    def set_new(self, new: bool):
+        if new != self._new:
+            self._new = new
+            self.update()
+
+    def place(self, region: QRect):
+        screen = QApplication.screenAt(region.center()) or QApplication.primaryScreen()
+        geo = screen.geometry() if screen is not None else QRect(0, 0, 1920, 1080)
+        self.setGeometry(compute_panel_rect(region, self.SIZE, geo))
+
+    def enterEvent(self, e):
+        self.entered.emit()
+        super().enterEvent(e)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(255, 255, 255, 80), 1))
+        p.setBrush(QColor(18, 20, 26, 235))
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 7, 7)
+        p.setPen(QColor(185, 230, 255) if self._new else QColor(154, 163, 178))
+        font = QFont(self.font())
+        font.setPixelSize(13)
+        p.setFont(font)
+        p.drawText(self.rect(), Qt.AlignCenter, ("● " if self._new else "") + "Traducción ▾")
+        p.end()
+
+
 class LiveMode(QObject):
     active_changed = pyqtSignal(bool)
     message = pyqtSignal(str)
@@ -643,6 +796,14 @@ class LiveMode(QObject):
         self._full = None                    # captura de la pantalla entera tomada junto con la lectura
         self._freeze_paused = False
         self.panel = LivePanel()
+        self.tab = PanelTab()
+        self.tab_mode = False                # el panel es una viñeta que se abre al pasar el mouse
+        self._expanded = False               # (en modo viñeta) el panel está abierto
+        self._collapse_timer = QTimer(self)
+        self._collapse_timer.setSingleShot(True)
+        self._collapse_timer.setInterval(700)
+        self._collapse_timer.timeout.connect(self._collapse)
+        self.keys = load_keys(win.settings, "live")
         self.box = None                      # (x0, y0, x1, y1) en píxeles reales
         self.rect = None                     # QRect global en píxeles lógicos
         self.active = False
@@ -667,7 +828,7 @@ class LiveMode(QObject):
         self._cur = None                                         # la entrada de la lectura en curso
         self._temp_timer = QTimer(self)
         self._temp_timer.setSingleShot(True)
-        self._temp_timer.setInterval(PANEL_TEMP_MS)
+        self.history_max = 30
         self._temp_timer.timeout.connect(self._temp_expired)
         self._scale = (1.0, 1.0)             # píxeles reales por píxel lógico
         self._origin = (0.0, 0.0)            # esquina del monitor en coordenadas lógicas
@@ -686,6 +847,9 @@ class LiveMode(QObject):
         self.panel.auto_requested.connect(self.toggle_auto)
         self.panel.freeze_requested.connect(self.toggle_freeze)
         self.panel.copy_requested.connect(self.copy_last)
+        self.panel.mode_bar.mode_requested.connect(self.win.set_ocr_mode)
+        self.tab.entered.connect(self._expand)
+        self.panel.left.connect(self._collapse_later)
         self.panel.close_requested.connect(self.hide_panel)
         self.panel.clear_requested.connect(self.clear_history)
         self.panel.entry_deleted.connect(self.delete_entry)
@@ -703,6 +867,7 @@ class LiveMode(QObject):
         size = win.settings.value("live_panel_size")
         if isinstance(size, QSize):
             self.panel.set_user_size(size)
+        self.apply_settings()
 
     # ------------------------------------------------------------------ control
     def start(self, box, rect: QRect):
@@ -720,16 +885,16 @@ class LiveMode(QObject):
         self.layer.clear()
         self.layer.setGeometry(self.rect)
         self._render_panel()
-        self.panel.set_note("En vivo · pulsa «Leer» o Ctrl+Alt+R")
+        self.panel.set_note(f"En vivo · pulsa «Leer» o {hotkey_label(self.win.settings, 'read')}")
         self.panel_visible = True
         self.layer.set_text_visible(True)
         self._sync_toggle_text()
         self.panel.set_region(self.rect)
         self.layer.show()
-        self.panel.setVisible(self.panel_visible)
+        self._sync_panel()
         self.layer.set_stale(False)
         self.capture_safe = bool(self._exclude(self.layer))
-        for extra in (self.panel, self.freezer):
+        for extra in (self.panel, self.tab, self.freezer):
             try:
                 self._exclude(extra)
             except Exception:  # noqa: BLE001
@@ -753,6 +918,8 @@ class LiveMode(QObject):
         self.layer.clear()
         self.layer.hide()
         self.panel.hide()
+        self.tab.hide()
+        self._expanded = False
         if was:
             self.active_changed.emit(False)
 
@@ -779,14 +946,14 @@ class LiveMode(QObject):
         self._render_panel()
 
     def _render_panel(self):
-        shown = self.history[:HISTORY_SHOW] if self.keep_history else self.history[:1]
+        shown = self.history if self.keep_history else self.history[:1]
         self.panel.set_entries(shown, self.show_original, self.keep_history)
 
     def _new_entry(self, original: str):
         self._entry_id += 1
         self._cur = {"id": self._entry_id, "original": original, "translation": ""}
         self.history.insert(0, self._cur)
-        del self.history[HISTORY_MAX:]
+        del self.history[self.history_max:]
         self._render_panel()
 
     def delete_entry(self, entry_id: int):
@@ -812,17 +979,39 @@ class LiveMode(QObject):
             self.panel.set_note("En vivo · copiado al portapapeles")
 
     def _reveal_panel(self):
+        if self.tab_mode:
+            return
         if self.active and self.panel_visible and not self.panel.isVisible() and not self._hidden_for_select:
             self.panel.show()
             self.panel.place()
 
     def _temp_expired(self):
-        if not self.panel_temp or not self.active or self.inflight or self._reading:
+        if self.tab_mode or not self.panel_temp or not self.active or self.inflight or self._reading:
             return
         if self.panel.isVisible() and self.panel.underMouse():
             self._temp_timer.start()                   # el mouse está encima: se espera
             return
         self.panel.hide()
+
+    def apply_settings(self):
+        """Lee los números de la configuración (ventana «Configuración») y los aplica."""
+        s = self.win.settings
+        self.history_max = get_number(s, "live_history_max")
+        del self.history[self.history_max:]
+        self._temp_timer.setInterval(get_number(s, "live_panel_hide_s") * 1000)
+        self.panel.set_font_px(get_number(s, "live_panel_font"))
+        self.layer.set_opacity(get_number(s, "live_text_opacity") / 100)
+        self.controller.configure(sensitivity=get_number(s, "live_sensitivity"), interval_ms=300,
+                                  stable_ms=get_number(s, "live_stable_ms"), min_gap_ms=get_number(s, "live_min_gap_ms"))
+        self.keys = load_keys(s, "live")
+        self.panel.mode_bar.set_keys(self.keys)
+        tab = s.value("live_panel_tab", False) in (True, "true", "1", 1)
+        if tab != self.tab_mode:
+            self.tab_mode = tab
+            self._expanded = False
+            self._temp_timer.stop()
+            self._sync_panel()
+        self._render_panel()
 
     def set_freeze_options(self, read=None, auto=None):
         if read is not None:
@@ -887,15 +1076,56 @@ class LiveMode(QObject):
         self._sync_toggle_text()
 
     def hide_panel(self):
-        if self.active and self.panel_visible:
+        """✕ del panel: lo cierra (en modo viñeta, solo lo pliega a la pestaña)."""
+        if self.tab_mode and self._expanded:
+            self._expanded = False
+            self._sync_panel()
+        elif self.active and self.panel_visible:
             self.toggle_panel()
+
+    # --- panel como ventana o como viñeta ---
+    def _sync_panel(self):
+        want = self.active and self.panel_visible and not self._hidden_for_select
+        if not want:
+            self.panel.hide()
+            self.tab.hide()
+        elif self.tab_mode and not self._expanded:
+            self.panel.hide()
+            if self.rect is not None:
+                self.tab.place(self.rect)
+            self.tab.show()
+        else:
+            self.tab.hide()
+            if not self.panel.isVisible():
+                self.panel.show()
+            self.panel.place()
+
+    def _expand(self):
+        if self.tab_mode and self.active and not self._expanded:
+            self._expanded = True
+            self.tab.set_new(False)
+            self._sync_panel()
+            self._collapse_timer.start(1500)         # si el mouse nunca llega al panel, se pliega
+
+    def _collapse_later(self):
+        if self.tab_mode and self._expanded:
+            self._collapse_timer.start()
+
+    def _collapse(self):
+        if not (self.tab_mode and self._expanded):
+            return
+        if self.panel.underMouse() or self.panel._drag is not None:
+            return
+        self._expanded = False
+        self._sync_panel()
 
     def toggle_panel(self):
         """«T» / Ctrl+Alt+T: muestra u oculta el panel con la traducción."""
         if not self.active:
             return
         self.panel_visible = not self.panel_visible
-        self.panel.setVisible(self.panel_visible)
+        self._expanded = False
+        self._sync_panel()
         self._sync_toggle_text()
 
     def _sync_toggle_text(self):
@@ -912,6 +1142,16 @@ class LiveMode(QObject):
         self.inflight = True
         self.controller.set_busy(True)
         win._request(self._image)
+
+    def reread(self):
+        """Vuelve a procesar la última lectura (cambió el modo de OCR)."""
+        if not self.active or self._reading or self.inflight or self._image is None or self._hidden_for_select:
+            return
+        self.kind = "manual"
+        self.skip = False
+        self.inflight = True
+        self.controller.set_busy(True)
+        self.win._request(self._image)
 
     # --- mover / estirar la región ---
     def _compute_scale(self):
@@ -950,25 +1190,21 @@ class LiveMode(QObject):
         self._set_frozen(None)
         self.layer.clear()                        # el texto de antes ya no encaja con la región nueva
         self.panel.set_region(self.rect)
+        self._sync_panel()
         if self.controller.box is not None:
             self.controller.set_box(self.box)
 
-    def handle_key(self, key):
-        """Las mismas teclas que la captura congelada, con la región o el panel en foco."""
-        if key == Qt.Key_Escape:
-            self.stop()
-        elif key == Qt.Key_T:
-            self.toggle_panel()
-        elif key == Qt.Key_O:
-            self.toggle_text()
-        elif key == Qt.Key_M:
-            self.toggle_merge()
-        elif key == Qt.Key_E:
-            self.toggle_edit()
-        elif key == Qt.Key_A:
-            self.toggle_auto()
-        elif key == Qt.Key_F:
-            self.toggle_freeze()
+    def handle_key(self, key, modifiers=0):
+        """Las teclas con la región o el panel en foco (se configuran en «Configuración»)."""
+        action = key_action(self.keys, Qt.KeyboardModifiers(modifiers), key)
+        if action is None and key == Qt.Key_Escape and not self.keys.get("stop"):
+            action = "stop"                       # Esc siempre detiene, aunque se le haya quitado la tecla
+        if action in ("mode_normal", "mode_kana", "mode_vertical"):
+            if self.panel.mode_bar._available:
+                self.win.set_ocr_mode(action[5:])
+            return
+        {"stop": self.stop, "panel": self.toggle_panel, "text": self.toggle_text, "merge": self.toggle_merge,
+         "edit": self.toggle_edit, "auto": self.toggle_auto, "freeze": self.toggle_freeze}.get(action, lambda: None)()
 
     # --- elegir otra región: se esconde todo para que no salga en la captura congelada ---
     def hide_for_select(self):
@@ -978,6 +1214,7 @@ class LiveMode(QObject):
             self._pause_auto(True)
             self.layer.hide()
             self.panel.hide()
+            self.tab.hide()
 
     def restore_after_select(self):
         if not self._hidden_for_select:
@@ -985,7 +1222,7 @@ class LiveMode(QObject):
         self._hidden_for_select = False
         if self.active:
             self.layer.show()
-            self.panel.setVisible(self.panel_visible)
+            self._sync_panel()
             self._pause_auto(False)
 
     # ------------------------------------------------------------------ lectura
@@ -1159,6 +1396,8 @@ class LiveMode(QObject):
         self._render_panel()
         self.panel.set_note(self._base_note())
         self.layer.set_translation_fallback(text)
+        if self.tab_mode and not self._expanded:
+            self.tab.set_new(True)
         if self.panel_temp:
             self._temp_timer.start()
 

@@ -157,3 +157,57 @@ class OcrEngine:
 
         text = "\n".join(t for t, _ in lines)
         return OcrResult(text=text, lines=lines, boxes=boxes)
+
+
+# ---------------------------------------------------------------------------- filas (idiomas con espacios)
+ROW_OVERLAP = 0.5      # solapamiento vertical mínimo (fracción de la caja más baja) para ser de la misma fila
+ROW_GAP = 2.5          # hueco máximo entre dos cajas de una fila, en alturas de línea; más allá son bloques distintos
+
+
+def merge_rows(res: OcrResult) -> OcrResult:
+    """Une en una sola línea las cajas que están en la misma fila (de izquierda a derecha).
+
+    Con letras muy separadas (fuentes de juego con espaciado ancho) el detector parte una frase en palabras sueltas
+    y cada una sale como línea aparte. Aquí se vuelven a juntar: mismas filas, huecos normales entre palabras.
+    Para idiomas con espacios (inglés, francés); el japonés tiene su propio procesado (japanese.process).
+    """
+    if len(res.boxes) != len(res.lines) or len(res.lines) < 2:
+        return res
+    items = [(t, s, tuple(b)) for (t, s), b in zip(res.lines, res.boxes) if t.strip()]
+    items.sort(key=lambda it: (it[2][1] + it[2][3]) / 2)
+    rows = []                                           # cada fila: [(texto, confianza, caja)]
+    for it in items:
+        box = it[2]
+        for row in rows:
+            top, bottom = min(b[1] for _t, _s, b in row), max(b[3] for _t, _s, b in row)
+            overlap = min(bottom, box[3]) - max(top, box[1])
+            if overlap >= ROW_OVERLAP * min(bottom - top, box[3] - box[1]):
+                row.append(it)
+                break
+        else:
+            rows.append([it])
+    merged = []                                         # (texto, confianza, caja)
+    for row in rows:
+        row.sort(key=lambda it: it[2][0])
+        chunk = [row[0]]
+        for it in row[1:]:
+            height = max(b[3] - b[1] for _t, _s, b in chunk + [it])
+            if it[2][0] - max(b[2] for _t, _s, b in chunk) <= ROW_GAP * height:
+                chunk.append(it)
+            else:
+                merged.append(chunk)
+                chunk = [it]
+        merged.append(chunk)
+    out_lines, out_boxes = [], []
+    for chunk in sorted(merged, key=lambda c: ((min(b[1] for _t, _s, b in c) + max(b[3] for _t, _s, b in c)) / 2,
+                                                min(b[0] for _t, _s, b in c))):
+        text = " ".join(t.strip() for t, _s, _b in chunk)
+        weight = sum(len(t) for t, _s, _b in chunk) or 1
+        score = sum(float(s) * len(t) for t, s, _b in chunk) / weight
+        out_lines.append((text, score))
+        out_boxes.append((min(b[0] for _t, _s, b in chunk), min(b[1] for _t, _s, b in chunk),
+                          max(b[2] for _t, _s, b in chunk), max(b[3] for _t, _s, b in chunk)))
+    if len(out_lines) == len(res.lines):                # nada que unir: se devuelve tal cual
+        return res
+    from dataclasses import replace
+    return replace(res, lines=out_lines, boxes=out_boxes, text="\n".join(t for t, _ in out_lines))

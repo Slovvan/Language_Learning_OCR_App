@@ -36,21 +36,14 @@ from UI.settings import AppSettings
 from UI.settings_window import SettingsDialog
 from UI.hotkeys import HotkeyManager, global_label
 from UI.live_mode import LiveMode
+from UI.app_settings import get_ocr_bar, hotkey_label, load_bindings, load_keys
+from UI.hotkeys import HotkeyManager
+from UI.live_mode import LiveMode
+from UI.settings_window import SettingsDialog
 from Cards.cards import CardStore
 
 import Translator.japanese as japanese
 import Translator.languages as languages
-
-HOTKEY = "<ctrl>+<alt>+o"
-HOTKEY_LABEL = "Ctrl+Alt+O"
-HOTKEY_READ = "<ctrl>+<alt>+r"           # modo en vivo: leer la región fija
-HOTKEY_READ_LABEL = "Ctrl+Alt+R"
-HOTKEY_TEXT = "<ctrl>+<alt>+h"           # modo en vivo: quitar / poner el texto sobre el original (tecla O)
-HOTKEY_PANEL = "<ctrl>+<alt>+t"          # modo en vivo: mostrar / ocultar el panel de traducción (tecla T)
-HOTKEY_MERGE = "<ctrl>+<alt>+m"          # modo en vivo: unir / separar líneas (tecla M)
-HOTKEY_EDIT = "<ctrl>+<alt>+e"           # modo en vivo: mover / estirar la región (tecla E)
-HOTKEY_FREEZE = "<ctrl>+<alt>+f"         # modo en vivo: congelar / descongelar la región (tecla F)
-HOTKEY_AUTO = "<ctrl>+<alt>+a"           # modo en vivo: lectura automática sí / no (tecla A)
 
 
 def make_icon() -> QIcon:
@@ -80,33 +73,6 @@ def _has_simplemma() -> bool:
         return False
 
 
-class HotkeyBridge(QObject):
-    """Convierte el atajo global (hilo de pynput) en una señal de Qt."""
-    triggered = pyqtSignal(str)             # «capture» / «read» / «text»
-
-    def __init__(self):
-        super().__init__()
-        self._listener = None
-        try:
-            from pynput import keyboard
-            self._listener = keyboard.GlobalHotKeys({
-                HOTKEY: lambda: self.triggered.emit("capture"),
-                HOTKEY_READ: lambda: self.triggered.emit("read"),
-                HOTKEY_TEXT: lambda: self.triggered.emit("text"),
-                HOTKEY_PANEL: lambda: self.triggered.emit("panel"),
-                HOTKEY_MERGE: lambda: self.triggered.emit("merge"),
-                HOTKEY_EDIT: lambda: self.triggered.emit("edit"),
-                HOTKEY_AUTO: lambda: self.triggered.emit("auto"),
-                HOTKEY_FREEZE: lambda: self.triggered.emit("freeze")})
-            self._listener.start()
-        except Exception as exc:  # noqa: BLE001
-            print(f"[aviso] Atajo global no disponible: {exc}")
-
-    def stop(self):
-        if self._listener:
-            self._listener.stop()
-
-
 class MainWindow(QWidget):
     process_requested = pyqtSignal(object, bool)   # imagen, unir_lineas
     card_requested = pyqtSignal(int, str, str)     # id de tarjeta, frase, palabra a traducir ("" = ninguna)
@@ -121,6 +87,7 @@ class MainWindow(QWidget):
         self.cards_window = None
         self.glossary_window = None
         self.log_window = None
+        self.settings_dialog = None
         self._ocr_info = ""
         self._merge_used = True     # ¿se unieron las líneas en la captura actual?
         self._last_image = None     # recorte de la última captura (para repetir con otro «unir líneas»)
@@ -154,19 +121,15 @@ class MainWindow(QWidget):
         self.words.card_requested.connect(self.card_requested)
 
         # --- UI ---
-        self.btn_capture = QPushButton(f"Capturar región ({HOTKEY_LABEL})")
+        self.btn_capture = QPushButton("Capturar región")
         self.btn_capture.setEnabled(False)
         self.combo_capture = QComboBox()
         self.combo_capture.addItem("Congelar la pantalla", "frozen")
         self.combo_capture.addItem("En vivo (región fija)", "live")
-        self.btn_live_read = QPushButton(f"Leer región ({HOTKEY_READ_LABEL})")
+        self.btn_live_read = QPushButton("Leer región")
         self.btn_live_text = QPushButton("Texto (O)")
-        self.btn_live_text.setToolTip("Muestra u oculta el texto dibujado sobre el original (Ctrl+Alt+H)")
         self.btn_live_panel = QPushButton("Panel (T)")
-        self.btn_live_panel.setToolTip("Muestra u oculta el panel con la traducción (Ctrl+Alt+T)")
         self.chk_live_auto = QCheckBox("Automático (A)")
-        self.chk_live_auto.setToolTip("Lee solo cuando el texto de la región cambia y se queda quieto (Ctrl+Alt+A).\n"
-                                      "Si lo desmarcas, solo se lee con «Leer región».")
         self.chk_freeze_read = QCheckBox("Congelar al leer")
         self.chk_freeze_read.setToolTip("Tras «Leer región», la región se queda congelada con el texto encima (F la descongela).\n"
                                         "Ojo: el juego sigue avanzando por detrás; solo la imagen se queda quieta.")
@@ -191,7 +154,6 @@ class MainWindow(QWidget):
                                   (self.chk_live_temp, "live_panel_temp", False)):
             chk.setChecked(self.settings.value(key, default) in (True, "true", "1", 1))
         self.btn_live_edit = QPushButton("Región (E)")
-        self.btn_live_edit.setToolTip("Mueve o cambia el tamaño de la región fija (Ctrl+Alt+E)")
         self.btn_live_stop = QPushButton("Detener")
         self.btn_cards = QPushButton()
         self.btn_log = QPushButton()
@@ -262,6 +224,9 @@ class MainWindow(QWidget):
         buttons2.addWidget(self.btn_cards)
         buttons2.addWidget(self.btn_log)
         buttons2.addWidget(self.btn_glossary)
+        self.btn_settings = QPushButton("Configuración…")
+        buttons4 = QHBoxLayout()
+        buttons4.addWidget(self.btn_settings)
         buttons3 = QHBoxLayout()
         buttons3.addWidget(self.btn_copy_src)
         buttons3.addWidget(self.btn_copy_dst)
@@ -279,6 +244,7 @@ class MainWindow(QWidget):
         layout.addLayout(buttons)
         layout.addLayout(buttons2)
         layout.addLayout(buttons3)
+        layout.addLayout(buttons4)
         layout.addWidget(self.chk_merge)
         layout.addWidget(self.status)
         layout.addWidget(self.how_to)
@@ -327,6 +293,7 @@ class MainWindow(QWidget):
         self.chk_freeze_read.toggled.connect(lambda on: (self.settings.setValue("live_freeze_read", on), self.live.set_freeze_options(on, None)))
         self.chk_freeze_auto.toggled.connect(lambda on: (self.settings.setValue("live_freeze_auto", on), self.live.set_freeze_options(None, on)))
         self.btn_live_stop.clicked.connect(lambda: self.live.stop())
+        self.btn_settings.clicked.connect(self.open_settings)
         self.btn_cards.clicked.connect(self.open_cards)
         self.btn_log.clicked.connect(self.open_log)
         self.btn_glossary.clicked.connect(self.open_glossary)
@@ -340,11 +307,15 @@ class MainWindow(QWidget):
         self.output.textChanged.connect(self.refresh_marks)
 
         # --- atajo global (opcional) ---
-        self.hotkey = HotkeyBridge()
+        self.hotkey = HotkeyManager()
         self.hotkey.triggered.connect(self.on_hotkey)
+        if not self.hotkey.available:
+            print(f"[aviso] Atajo global no disponible: {self.hotkey.error}")
+        self.hotkey.set_bindings(load_bindings(self.settings))
 
         # --- modo en vivo ---
         self.live = LiveMode(self)
+        self._apply_hotkey_labels()
         self.live.active_changed.connect(lambda _a: self._update_capture_ui())
         self.live.message.connect(self.status.setText)
         self.live.select_requested.connect(self.start_capture)
@@ -369,6 +340,8 @@ class MainWindow(QWidget):
         self.lbl_translation.setText(f"Traducción ({pack.target_name})")
         self.translation.setPlaceholderText(f"Traducción al {pack.target_name}...")
         self.combo_mode.setVisible(pack.has_ocr_modes)
+        if hasattr(self, "live"):
+            self._sync_mode_bars()
         if pack.code == "en":
             self.dict_note.setText("⚠ Diccionario no encontrado: ejecuta build_dictionary.py para ver "
                                    "significados al pasar el mouse sobre una palabra.")
@@ -417,6 +390,35 @@ class MainWindow(QWidget):
         mode = self.combo_mode.currentData()
         self.settings.setValue("ocr_mode", mode)
         self.configure_requested.emit(self.combo_lang.currentData(), mode)
+        self._sync_mode_bars()
+
+    def set_ocr_mode(self, mode: str):
+        """Cambia el modo de OCR del japonés (barra, teclas 1/2/3 o el selector) y vuelve a leer lo que haya en pantalla."""
+        if not languages.get_pack(self.combo_lang.currentData()).has_ocr_modes:
+            return
+        idx = self.combo_mode.findData(mode)
+        if idx < 0:
+            return
+        if idx != self.combo_mode.currentIndex():
+            self.combo_mode.setCurrentIndex(idx)             # on_mode_changed guarda y avisa al worker
+        else:
+            self._sync_mode_bars()
+        names = {"normal": "OCR normal", "kana": "OCR solo kana", "vertical": "OCR vertical"}
+        if self.overlay is not None and self.overlay.isVisible() and self.overlay.can_reprocess \
+                and self._last_image is not None and self.btn_capture.isEnabled():
+            self._request(self._last_image)
+            self.overlay.show_toast(names.get(mode, mode))
+        elif self.live.active:
+            self.live.reread()
+
+    def _sync_mode_bars(self):
+        """Las barras de modos (captura congelada y panel en vivo) muestran el modo actual, solo con japonés."""
+        has = languages.get_pack(self.combo_lang.currentData()).has_ocr_modes
+        policy, mode = get_ocr_bar(self.settings), str(self.combo_mode.currentData())
+        for bar in (self.live.panel.mode_bar,) + ((self.overlay.mode_bar,) if self.overlay is not None else ()):
+            bar.set_policy(policy)
+            bar.set_available(has)
+            bar.set_mode(mode)
 
     # --- palabras guardadas ---
     def refresh_marks(self):
@@ -513,13 +515,45 @@ class MainWindow(QWidget):
         self.settings.setValue("capture_mode", self.combo_capture.currentData())
         self._update_capture_ui()
 
+    def open_settings(self):
+        if self.settings_dialog is None:
+            self.settings_dialog = SettingsDialog(self.settings, self)
+            self.settings_dialog.changed.connect(self.apply_settings)
+        self.settings_dialog.show()
+        self.settings_dialog.raise_()
+        self.settings_dialog.activateWindow()
+
+    def apply_settings(self):
+        """Atajos, textos con su atajo y valores numéricos del modo en vivo."""
+        self.hotkey.set_bindings(load_bindings(self.settings))
+        self.live.apply_settings()
+        if self.overlay is not None:
+            self.overlay.set_keys(load_keys(self.settings, "frozen"))
+        self._sync_mode_bars()
+        self._apply_hotkey_labels()
+        self._update_capture_ui()
+
+    def _apply_hotkey_labels(self):
+        k = lambda a: hotkey_label(self.settings, a)          # noqa: E731
+        self.btn_live_read.setText(f"Leer región ({k('read')})")
+        self.btn_live_text.setToolTip(f"Muestra u oculta el texto dibujado sobre el original ({k('text')})")
+        self.btn_live_panel.setToolTip(f"Muestra u oculta el panel con la traducción ({k('panel')})")
+        self.btn_live_edit.setToolTip(f"Mueve o cambia el tamaño de la región fija ({k('edit')})")
+        self.chk_live_auto.setToolTip(f"Lee solo cuando el texto de la región cambia y se queda quieto ({k('auto')}).\n"
+                                      "Si lo desmarcas, solo se lee con «Leer región».")
+        self.chk_freeze_read.setToolTip(f"Tras «Leer región», la pantalla se queda congelada con el texto encima ({k('freeze')} la descongela).\n"
+                                        "Ojo: el juego sigue avanzando por detrás; solo la imagen se queda quieta.")
+        self.chk_freeze_auto.setToolTip(f"Cada frase detectada por la lectura automática congela la pantalla ({k('freeze')} la descongela).")
+        self.live.panel.btn_auto.setToolTip(f"Lee solo cuando el texto de la región cambia y se queda quieto ({k('auto')})")
+        self.live.panel.btn_close.setToolTip(f"Cierra el panel (T o {k('panel')} lo vuelve a abrir)")
+
     def _update_capture_ui(self):
         live = self._live_selected()
         self.combo_capture.setEnabled(not self.live.active)
         self.combo_capture.setToolTip("Detén el modo en vivo para cambiar de modo." if self.live.active
                                       else "Congelar: eliges una región en cada captura.\n"
                                            "En vivo: eliges la región una vez y la lees cuando quieras.")
-        self.btn_capture.setText(f"{'Elegir región fija' if live else 'Capturar región'} ({HOTKEY_LABEL})")
+        self.btn_capture.setText(f"{'Elegir región fija' if live else 'Capturar región'} ({hotkey_label(self.settings, 'capture')})")
         self.chk_live_auto.setVisible(live)
         self.chk_freeze_read.setVisible(live)
         self.chk_freeze_auto.setVisible(live)
@@ -529,10 +563,10 @@ class MainWindow(QWidget):
             b.setVisible(live)
             b.setEnabled(self.live.active)
         self.how_to.setText(
-            "Modo en vivo: elige la región una vez; con «Leer» (Ctrl+Alt+R) se lee y el texto aparece sobre el original; "
+            f"Modo en vivo: elige la región una vez; con «Leer» ({hotkey_label(self.settings, 'read')}) se lee y el texto aparece sobre el original; "
             "con el mouse ves y guardas palabras. Como en la captura congelada: T panel, O texto, M unir líneas, E mover o "
             "estirar la región, F congelar/descongelar, Esc detiene y clic derecho elige otra región (haz clic en la región o el panel para que las "
-            "teclas funcionen; desde el juego usa Ctrl+Alt+T / H / M / E)."
+            "teclas funcionen; desde el juego usa los atajos de Configuración)."
             if live else
             "Tras elegir la región, la pantalla queda congelada con el texto encima. "
             "Esc la cierra. Esta ventana se minimiza al capturar y no vuelve a aparecer sola: "
@@ -589,6 +623,7 @@ class MainWindow(QWidget):
             self._grabbing = False
         if self.overlay is None:
             self.overlay = CaptureOverlay()
+            self.overlay.set_keys(load_keys(self.settings, "frozen"))
             self.overlay.region_selected.connect(self.on_region)
             self.overlay.word_anchor.connect(self.popup.set_anchor)
             self.overlay.hover_ended.connect(lambda: self.popup.set_anchor(None))
@@ -598,8 +633,10 @@ class MainWindow(QWidget):
             self.overlay.wheel_moved.connect(self.words.scroll_popup)
             self.overlay.word_clicked.connect(self.on_overlay_word_clicked)
             self.overlay.merge_toggled.connect(self.on_merge_toggled)
+            self.overlay.mode_requested.connect(self.set_ocr_mode)
             self.overlay.closed.connect(self.on_overlay_closed)
             self.overlay.region_chosen.connect(self.on_live_region)
+        self._sync_mode_bars()
         self.overlay.open(frame, select_only=self._live_selected())
 
     def on_overlay_closed(self):
@@ -631,7 +668,7 @@ class MainWindow(QWidget):
 
     # --- resultados del worker ---
     def on_ready(self):
-        self.status.setText(f"Listo. Pulsa el botón o {HOTKEY_LABEL}.")
+        self.status.setText(f"Listo. Pulsa el botón o {hotkey_label(self.settings, 'capture')}.")
         self.btn_capture.setEnabled(True)
 
     def on_result(self, res):

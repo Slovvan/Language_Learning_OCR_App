@@ -73,9 +73,9 @@ def normalize_global(combo: str):
 
 
 def is_risky(combo: str) -> bool:
-    """¿Es una sola letra, número o signo (sin Ctrl/Alt/Mayús…)? Esa tecla también le llega al juego."""
+    """¿Se pulsa sin Ctrl, Alt ni Win? Entonces la tecla también le llega al juego (los atajos no la bloquean)."""
     mods, keys = _split(combo)
-    return not mods and len(keys) == 1 and len(keys[0]) == 1
+    return bool(keys) and not any(m in ("ctrl", "alt", "cmd") for m in mods)
 
 
 def global_label(combo: str) -> str:
