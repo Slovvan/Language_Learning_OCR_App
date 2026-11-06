@@ -1,9 +1,3 @@
-"""Fase 5: pantalla congelada con el texto traducible encima + registro de frases.
-
-Atajo (o botón) -> la pantalla se congela -> eliges la región -> el texto reconocido se dibuja
-sobre el original. Con el mouse sobre una palabra ves su significado; un clic la guarda para Anki.
-La ventana principal se minimiza al capturar y no vuelve a aparecer sola: la abres tú desde la barra de tareas.
-"""
 # IMPORTANTE (Windows): las librerías nativas se importan ANTES que PyQt5.
 # Importarlas por primera vez dentro de un hilo con Qt ya cargado provoca
 # "access violation".
@@ -12,12 +6,12 @@ import ctranslate2  # noqa: F401
 
 import sys
 
-from PyQt5.QtCore import QObject, QSettings, Qt, QThread, QTimer, pyqtSignal
+from PyQt5.QtCore import QObject, QRect, QSettings, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QGuiApplication, QIcon, QPainter, QPixmap
 from PyQt5.QtWidgets import (QApplication, QCheckBox, QComboBox, QHBoxLayout, QLabel,
                              QPushButton, QTextEdit, QVBoxLayout, QWidget)
 
-
+import UI.profiles as profiles
 from DB.dictionary import Dictionary
 from DB.dictionary_ja import JaDictionary
 from DB.dictionary_fr import FrDictionary
@@ -32,13 +26,13 @@ from UI.word_service import WordService
 from UI.ocr_worker import OcrWorker
 from UI.capture import bgr_to_qpixmap, grab_screen
 from UI.cards_window import CardsWindow
-from UI.settings import AppSettings
 from UI.settings_window import SettingsDialog
 from UI.hotkeys import HotkeyManager, global_label
 from UI.live_mode import LiveMode
-from UI.app_settings import get_ocr_bar, hotkey_label, load_bindings, load_keys
+from UI.app_settings import get_ocr_bar, hotkey_label, load_bindings, load_keys, get_number
 from UI.hotkeys import HotkeyManager
 from UI.live_mode import LiveMode
+from UI.live_options import LiveOptions
 from UI.settings_window import SettingsDialog
 from Cards.cards import CardStore
 
@@ -115,7 +109,9 @@ class MainWindow(QWidget):
                        "ja": GlossaryDictionary(self.dictionary_ja, self.glossary, "ja"),
                        "fr": GlossaryDictionary(self.dictionary_fr, self.glossary, "fr")}
         self.popup = WordPopup()
+        self.popup.set_scale(get_number(self.settings, "popup_scale"))
         self.words = WordService(self._dictionary_for(lang), self.store, self.popup, self, self.glossary)
+        self.words.merge_getter = lambda: self._merge_used
         self.words.saved_changed.connect(self._cards_changed)
         self.words.message.connect(self._on_word_message)
         self.words.card_requested.connect(self.card_requested)
@@ -129,30 +125,11 @@ class MainWindow(QWidget):
         self.btn_live_read = QPushButton("Leer región")
         self.btn_live_text = QPushButton("Texto (O)")
         self.btn_live_panel = QPushButton("Panel (T)")
-        self.chk_live_auto = QCheckBox("Automático (A)")
-        self.chk_freeze_read = QCheckBox("Congelar al leer")
-        self.chk_freeze_read.setToolTip("Tras «Leer región», la región se queda congelada con el texto encima (F la descongela).\n"
-                                        "Ojo: el juego sigue avanzando por detrás; solo la imagen se queda quieta.")
-        self.chk_freeze_auto = QCheckBox("Congelar en automático")
-        self.chk_freeze_auto.setToolTip("Cada frase detectada por la lectura automática congela la región (F la descongela).")
-        for chk, key in ((self.chk_freeze_read, "live_freeze_read"), (self.chk_freeze_auto, "live_freeze_auto")):
-            chk.setChecked(self.settings.value(key, False) in (True, "true", "1", 1))
-        self.chk_live_orig = QCheckBox("Original en el panel")
-        self.chk_live_orig.setToolTip("El panel muestra, además de la traducción, el texto reconocido.")
-        self.chk_live_hist = QCheckBox("Historial")
-        self.chk_live_hist.setToolTip("El panel acumula las últimas lecturas (la más nueva arriba), cada una con ✕ para borrarla.\n"
-                                      "«Limpiar» en el panel las borra todas. El registro principal de la app no se toca.")
-        self.chk_live_save = QCheckBox("Guardar en el registro")
-        self.chk_live_save.setToolTip("Cada lectura del modo en vivo se guarda en «Registro de frases». Desmarcada, solo vive en el panel.")
-        self.chk_live_over = QCheckBox("Traducción sobre la región")
-        self.chk_live_over.setToolTip("Sobre la región se dibuja la traducción en lugar del texto reconocido.\n"
-                                      "Mientras esté activa no se pueden guardar palabras con el mouse.")
-        self.chk_live_temp = QCheckBox("Panel temporal")
-        self.chk_live_temp.setToolTip("El panel aparece al leer y se esconde solo unos segundos después (si el mouse no está encima).")
-        for chk, key, default in ((self.chk_live_orig, "live_show_original", False), (self.chk_live_hist, "live_history", False),
-                                  (self.chk_live_save, "live_save_log", True), (self.chk_live_over, "live_over", False),
-                                  (self.chk_live_temp, "live_panel_temp", False)):
-            chk.setChecked(self.settings.value(key, default) in (True, "true", "1", 1))
+        self.profile_label = QLabel("Perfil:")
+        self.combo_profile = QComboBox()                  # perfiles por juego (modo en vivo)
+        self.combo_profile.setToolTip("Perfil del juego: región fija, idioma, modo de OCR y opciones del modo en vivo.")
+        self.btn_profile_save = QPushButton("Guardar…")
+        self.btn_profile_save.setToolTip("Guarda la región, el idioma, el modo de OCR y las opciones actuales como perfil de este juego.")
         self.btn_live_edit = QPushButton("Región (E)")
         self.btn_live_stop = QPushButton("Detener")
         self.btn_cards = QPushButton()
@@ -205,19 +182,10 @@ class MainWindow(QWidget):
         live_row = QHBoxLayout()
         for b in (self.btn_live_read, self.btn_live_text, self.btn_live_panel, self.btn_live_edit, self.btn_live_stop):
             live_row.addWidget(b)
-        live_row2 = QHBoxLayout()
-        live_row2.addWidget(self.chk_live_auto)
-        live_row2.addWidget(self.chk_freeze_read)
-        live_row2.addWidget(self.chk_freeze_auto)
-        live_row2.addStretch(1)
-        live_row3 = QHBoxLayout()
-        for chk in (self.chk_live_orig, self.chk_live_hist, self.chk_live_save):
-            live_row3.addWidget(chk)
-        live_row3.addStretch(1)
-        live_row4 = QHBoxLayout()
-        for chk in (self.chk_live_over, self.chk_live_temp):
-            live_row4.addWidget(chk)
-        live_row4.addStretch(1)
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(self.profile_label)
+        profile_row.addWidget(self.combo_profile, 1)
+        profile_row.addWidget(self.btn_profile_save)
         buttons = QHBoxLayout()
         buttons.addWidget(self.btn_capture)
         buttons2 = QHBoxLayout()
@@ -238,9 +206,7 @@ class MainWindow(QWidget):
         layout.addLayout(langs)
         layout.addLayout(modes)
         layout.addLayout(live_row)
-        layout.addLayout(live_row2)
-        layout.addLayout(live_row3)
-        layout.addLayout(live_row4)
+        layout.addLayout(profile_row)
         layout.addLayout(buttons)
         layout.addLayout(buttons2)
         layout.addLayout(buttons3)
@@ -285,15 +251,10 @@ class MainWindow(QWidget):
         self.btn_live_text.clicked.connect(lambda: self.live.toggle_text())
         self.btn_live_panel.clicked.connect(lambda: self.live.toggle_panel())
         self.btn_live_edit.clicked.connect(lambda: self.live.toggle_edit())
-        self.chk_live_auto.clicked.connect(lambda on: self.live.set_auto(on))
-        for chk, key, arg in ((self.chk_live_orig, "live_show_original", "original"), (self.chk_live_hist, "live_history", "history"),
-                              (self.chk_live_save, "live_save_log", "save_log"), (self.chk_live_over, "live_over", "over"),
-                              (self.chk_live_temp, "live_panel_temp", "temp")):
-            chk.toggled.connect(lambda on, key=key, arg=arg: (self.settings.setValue(key, on), self.live.set_panel_options(**{arg: on})))
-        self.chk_freeze_read.toggled.connect(lambda on: (self.settings.setValue("live_freeze_read", on), self.live.set_freeze_options(on, None)))
-        self.chk_freeze_auto.toggled.connect(lambda on: (self.settings.setValue("live_freeze_auto", on), self.live.set_freeze_options(None, on)))
         self.btn_live_stop.clicked.connect(lambda: self.live.stop())
-        self.btn_settings.clicked.connect(self.open_settings)
+        self.btn_settings.clicked.connect(lambda: self.open_settings())
+        self.btn_profile_save.clicked.connect(self.save_profile_dialog)
+        self._profile_loading = False
         self.btn_cards.clicked.connect(self.open_cards)
         self.btn_log.clicked.connect(self.open_log)
         self.btn_glossary.clicked.connect(self.open_glossary)
@@ -314,16 +275,18 @@ class MainWindow(QWidget):
         self.hotkey.set_bindings(load_bindings(self.settings))
 
         # --- modo en vivo ---
+        self.live_options = LiveOptions(self.settings)     # las casillas del modo en vivo (Configuración y tuerca del panel)
         self.live = LiveMode(self)
+        self._sync_mode_bars()
         self._apply_hotkey_labels()
         self.live.active_changed.connect(lambda _a: self._update_capture_ui())
         self.live.message.connect(self.status.setText)
         self.live.select_requested.connect(self.start_capture)
-        self.live.auto_changed.connect(self._sync_auto_check)
-        self._sync_auto_check(self.live.auto)
         saved = str(self.settings.value("capture_mode", "frozen"))
         self.combo_capture.setCurrentIndex(max(0, self.combo_capture.findData(saved)))
 
+        self._reload_profiles()
+        self.combo_profile.currentIndexChanged.connect(self._on_profile_chosen)
         self._apply_language_ui()
         self._update_buttons()
         self._update_capture_ui()
@@ -515,18 +478,111 @@ class MainWindow(QWidget):
         self.settings.setValue("capture_mode", self.combo_capture.currentData())
         self._update_capture_ui()
 
-    def open_settings(self):
+    def open_settings(self, tab: int = None):
+        """Abre Configuración (en la pestaña `tab`: 0 atajos, 1 captura congelada, 2 modo en vivo, 3 apariencia, 4 perfiles)."""
         if self.settings_dialog is None:
-            self.settings_dialog = SettingsDialog(self.settings, self)
+            self.settings_dialog = SettingsDialog(self.settings, self.live_options, self)
             self.settings_dialog.changed.connect(self.apply_settings)
+            self.settings_dialog.profile_use.connect(self.apply_profile)
+            self.settings_dialog.profile_save.connect(self.save_profile)
+            self.settings_dialog.profiles_changed.connect(self._reload_profiles)
+        if tab is not None:
+            self.settings_dialog.tabs.setCurrentIndex(tab)
         self.settings_dialog.show()
         self.settings_dialog.raise_()
         self.settings_dialog.activateWindow()
+
+    # --- perfiles por juego ---
+    def _reload_profiles(self):
+        """Rellena el selector de perfiles con los guardados."""
+        active = str(self.settings.value("profile_active", ""))
+        self._profile_loading = True
+        self.combo_profile.clear()
+        self.combo_profile.addItem("(sin perfil)", "")
+        for name in profiles.load(self.settings):
+            self.combo_profile.addItem(name, name)
+        self.combo_profile.setCurrentIndex(max(0, self.combo_profile.findData(active)))
+        self._profile_loading = False
+
+    def _on_profile_chosen(self):
+        if self._profile_loading:
+            return
+        name = self.combo_profile.currentData()
+        self.settings.setValue("profile_active", name or "")
+        if name:
+            self.apply_profile(name)
+
+    def current_profile_data(self) -> dict:
+        data = {"lang": str(self.combo_lang.currentData()), "mode": str(self.combo_mode.currentData()),
+                "options": self.live_options.snapshot(),
+                "pause": {"key": str(self.settings.value("live_pause_key", ""))}}
+        if self.live.has_region() and self.live.rect is not None:
+            r = self.live.rect
+            data["box"] = [int(v) for v in self.live.box]
+            data["rect"] = [r.x(), r.y(), r.width(), r.height()]
+        return data
+
+    def save_profile(self, name: str) -> bool:
+        ok = profiles.save(self.settings, name, self.current_profile_data())
+        if ok:
+            self.settings.setValue("profile_active", name.strip())
+            self._reload_profiles()
+            if self.settings_dialog is not None:
+                self.settings_dialog.reload_profiles()
+        return ok
+
+    def save_profile_dialog(self):
+        from PyQt5.QtWidgets import QInputDialog, QMessageBox
+        name, ok = QInputDialog.getText(self, "Guardar perfil", "Nombre del juego o perfil:",
+                                        text=str(self.settings.value("profile_active", "")))
+        name = name.strip()
+        if not ok or not name:
+            return
+        if name in profiles.load(self.settings) and QMessageBox.question(
+                self, "Guardar perfil", f"Ya existe «{name}». ¿Reemplazarlo con la configuración actual?") != QMessageBox.Yes:
+            return
+        if self.save_profile(name):
+            self.status.setText(f"Perfil «{name}» guardado" + ("" if self.live.has_region() else " (sin región: elige una región fija para incluirla)") + ".")
+
+    def apply_profile(self, name: str):
+        """Pone idioma, modo de OCR, opciones, tecla de pausa y (si el perfil la tiene) la región fija del juego."""
+        profile = profiles.load(self.settings).get(name)
+        if profile is None:
+            return
+        self.settings.setValue("profile_active", name)
+        if self.combo_profile.currentData() != name:
+            self._reload_profiles()
+        notes = []
+        lang = profile.get("lang")
+        if lang and self.combo_lang.findData(lang) >= 0 and lang != self.combo_lang.currentData():
+            self.combo_lang.setCurrentIndex(self.combo_lang.findData(lang))
+        mode = profile.get("mode")
+        if mode and self.combo_mode.findData(mode) >= 0 and mode != self.combo_mode.currentData():
+            self.combo_mode.setCurrentIndex(self.combo_mode.findData(mode))
+        if "options" in profile:
+            self.live_options.apply(profile["options"])
+        if "pause" in profile:
+            self.settings.setValue("live_pause_key", profile["pause"].get("key", ""))
+            if self.settings_dialog is not None:
+                self.settings_dialog.reload_pause_key()
+        if "box" in profile:
+            x, y, w, h = profile["rect"]
+            rect = QRect(x, y, w, h)
+            if any(not (s.geometry().intersected(rect)).isEmpty() and
+                   s.geometry().intersected(rect).width() * s.geometry().intersected(rect).height() >= 0.5 * w * h
+                   for s in QApplication.screens()):
+                if self.combo_capture.currentData() != "live" and not self.live.active:
+                    self.combo_capture.setCurrentIndex(self.combo_capture.findData("live"))
+                self.on_live_region(tuple(profile["box"]), rect)
+            else:
+                notes.append("la región guardada queda fuera de las pantallas actuales: elígela de nuevo y guarda el perfil")
+        self.status.setText(f"Perfil «{name}» aplicado" + (f" ({'; '.join(notes)})" if notes else "") + ".")
 
     def apply_settings(self):
         """Atajos, textos con su atajo y valores numéricos del modo en vivo."""
         self.hotkey.set_bindings(load_bindings(self.settings))
         self.live.apply_settings()
+        self.popup.set_scale(get_number(self.settings, "popup_scale"))
         if self.overlay is not None:
             self.overlay.set_keys(load_keys(self.settings, "frozen"))
         self._sync_mode_bars()
@@ -539,11 +595,6 @@ class MainWindow(QWidget):
         self.btn_live_text.setToolTip(f"Muestra u oculta el texto dibujado sobre el original ({k('text')})")
         self.btn_live_panel.setToolTip(f"Muestra u oculta el panel con la traducción ({k('panel')})")
         self.btn_live_edit.setToolTip(f"Mueve o cambia el tamaño de la región fija ({k('edit')})")
-        self.chk_live_auto.setToolTip(f"Lee solo cuando el texto de la región cambia y se queda quieto ({k('auto')}).\n"
-                                      "Si lo desmarcas, solo se lee con «Leer región».")
-        self.chk_freeze_read.setToolTip(f"Tras «Leer región», la pantalla se queda congelada con el texto encima ({k('freeze')} la descongela).\n"
-                                        "Ojo: el juego sigue avanzando por detrás; solo la imagen se queda quieta.")
-        self.chk_freeze_auto.setToolTip(f"Cada frase detectada por la lectura automática congela la pantalla ({k('freeze')} la descongela).")
         self.live.panel.btn_auto.setToolTip(f"Lee solo cuando el texto de la región cambia y se queda quieto ({k('auto')})")
         self.live.panel.btn_close.setToolTip(f"Cierra el panel (T o {k('panel')} lo vuelve a abrir)")
 
@@ -554,11 +605,9 @@ class MainWindow(QWidget):
                                       else "Congelar: eliges una región en cada captura.\n"
                                            "En vivo: eliges la región una vez y la lees cuando quieras.")
         self.btn_capture.setText(f"{'Elegir región fija' if live else 'Capturar región'} ({hotkey_label(self.settings, 'capture')})")
-        self.chk_live_auto.setVisible(live)
-        self.chk_freeze_read.setVisible(live)
-        self.chk_freeze_auto.setVisible(live)
-        for chk in (self.chk_live_orig, self.chk_live_hist, self.chk_live_save, self.chk_live_over, self.chk_live_temp):
-            chk.setVisible(live)
+        self.combo_profile.setVisible(live)
+        self.btn_profile_save.setVisible(live)
+        self.profile_label.setVisible(live)
         for b in (self.btn_live_read, self.btn_live_text, self.btn_live_panel, self.btn_live_edit, self.btn_live_stop):
             b.setVisible(live)
             b.setEnabled(self.live.active)
@@ -572,12 +621,9 @@ class MainWindow(QWidget):
             "Esc la cierra. Esta ventana se minimiza al capturar y no vuelve a aparecer sola: "
             "cámbiate a ella desde la barra de tareas cuando quieras ver el registro.")
 
-    def _sync_auto_check(self, on):
-        self.chk_live_auto.blockSignals(True)
-        self.chk_live_auto.setChecked(bool(on))
-        self.chk_live_auto.blockSignals(False)
-
     def on_hotkey(self, action):
+        if self.live.key_guard():                 # eco de la tecla de pausa que pulsamos nosotros
+            return
         if action == "capture":
             self.start_capture()
         elif action == "read":

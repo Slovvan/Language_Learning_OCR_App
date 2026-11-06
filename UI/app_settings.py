@@ -22,6 +22,7 @@ NUMBERS = {
     "live_panel_hide_s": (6, 2, 60),        # segundos que dura el panel temporal
     "live_panel_font": (16, 11, 32),        # tamaño de letra del panel (px)
     "live_text_opacity": (100, 30, 100),    # opacidad (%) del fondo del texto dibujado sobre la región
+    "popup_scale": (100, 70, 200),          # tamaño (%) de la letra de la ventanita del diccionario
 }
 
 

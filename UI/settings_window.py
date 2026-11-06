@@ -1,7 +1,10 @@
-"""Ventana de configuración: tres pestañas (Atajos, Modo en vivo, Apariencia). Los cambios se aplican al momento."""
+"""Ventana de configuración: Atajos globales, Captura congelada, Modo en vivo, Apariencia y Perfiles. Los cambios se aplican al momento."""
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import (QComboBox, QDialog, QFrame, QScrollArea, QFormLayout, QGridLayout, QHBoxLayout, QLabel, QPushButton, QSlider, QSpinBox,
-                             QTabWidget, QVBoxLayout, QWidget)
+from PyQt5.QtWidgets import (QComboBox, QDialog, QFrame, QInputDialog, QListWidget, QMessageBox, QScrollArea, QFormLayout, QGridLayout,
+                             QHBoxLayout, QLabel, QPushButton, QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
+
+import UI.profiles as profiles
+from UI.live_options import checkbox
 
 from UI.app_settings import (ACTIONS, get_ocr_bar, KEY_SCOPES, NUMBERS, default_bindings, default_keys, get_number, load_bindings,
                           load_keys)
@@ -155,10 +158,14 @@ PANEL_ROWS = (
 
 class SettingsDialog(QDialog):
     changed = pyqtSignal()               # algo cambió: la ventana principal lo aplica
+    profile_use = pyqtSignal(str)        # «Usar» un perfil
+    profile_save = pyqtSignal(str)       # «Guardar la configuración actual» con ese nombre
+    profiles_changed = pyqtSignal()      # se borró o renombró un perfil
 
-    def __init__(self, settings, parent=None):
+    def __init__(self, settings, live_options, parent=None):
         super().__init__(parent, Qt.Dialog | Qt.WindowCloseButtonHint)
         self.settings = settings
+        self.live_options = live_options
         self.setWindowTitle("Configuración")
         self.resize(640, 560)
         self._buttons = {}
@@ -172,6 +179,7 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self._frozen_tab(), "Captura congelada")
         self.tabs.addTab(self._live_tab(), "Modo en vivo")
         self.tabs.addTab(self._look_tab(), "Apariencia")
+        self.tabs.addTab(self._profiles_tab(), "Perfiles")
         layout = QVBoxLayout(self)
         layout.addWidget(self.tabs, 1)
         layout.addWidget(self.note)
@@ -334,27 +342,196 @@ class SettingsDialog(QDialog):
             "Se usan con la pantalla congelada en primer plano. Una tecla sola o con Ctrl, Alt o Mayús. "
             "Pulsa un botón y la tecla nueva; Esc cancela. El clic derecho (elegir otra región) no se cambia."))
 
+    def _section(self, lay, title, intro=None):
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setStyleSheet("color: #ccc;")
+        lay.addWidget(line)
+        lay.addWidget(QLabel(f"<b>{title}</b>"))
+        if intro:
+            lay.addWidget(self._intro(intro))
+
+    def _checks(self, lay, keys):
+        for key in keys:
+            box = checkbox(self.live_options, key)
+            self._checkboxes[key] = box
+            lay.addWidget(box)
+
     def _live_tab(self):
+        self._checkboxes = {}
         keys = [r[0] for r in LIVE_ROWS + PANEL_ROWS]
         inner = QWidget()
         lay = QVBoxLayout(inner)
-        for item in self._keys_group("live", "Teclas con la región o el panel en foco",
-                                     "Haz clic en la región o el panel para darle el foco; desde el juego usa los atajos globales."):
-            lay.addWidget(item) if isinstance(item, QWidget) else lay.addLayout(item)
-        line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        lay.addWidget(line)
-        lay.addWidget(QLabel("<b>Lectura automática</b>"))
+        lay.addWidget(QLabel("<b>Lectura</b>"))
+        lay.addWidget(self._intro("Las mismas casillas están en la tuerca ⚙ del panel, para cambiarlas sin abrir esta ventana."))
+        self._checks(lay, ("live_auto", "live_freeze_read", "live_freeze_auto"))
         lay.addLayout(self._number_form(LIVE_ROWS))
-        lay.addWidget(QLabel("<b>Panel</b>"))
+
+        self._section(lay, "Panel de traducción")
+        self._checks(lay, ("live_show_original", "live_history", "live_save_log", "live_over", "live_panel_temp"))
         lay.addLayout(self._number_form(PANEL_ROWS))
-        lay.addLayout(self._reset_button(keys, "Restablecer estos valores"))
+
+        self._section(lay, "Pausa del juego",
+                      "Al congelar la pantalla se pulsa la tecla de pausa de tu juego, y otra vez al descongelar. "
+                      "Pon aquí la misma tecla que usa el juego. Se envía como si la pulsaras tú a la ventana en primer plano: "
+                      "usa los atajos globales para que el foco siga en el juego (si haces clic en el panel, la tecla le llega al panel).")
+        self._checks(lay, ("live_pause_on",))
+        self._pause_btn = KeyCaptureButton(str(self.settings.value("live_pause_key", "")))
+        self._pause_btn.captured.connect(self._set_pause_key)
+        self._pause_btn.rejected.connect(lambda why: self._say(why, True))
+        clear = QPushButton("Quitar")
+        clear.clicked.connect(lambda: self._set_pause_key(""))
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Tecla de pausa del juego"))
+        row.addWidget(self._pause_btn)
+        row.addWidget(clear)
+        row.addStretch(1)
+        lay.addLayout(row)
+        lay.addWidget(self._intro("Es una tecla que alterna (pausa / reanuda). Si el juego ya estaba en pausa al congelar, se reanudaría; "
+                                  "en ese caso desmarca la casilla."))
+
+        self._section(lay, "Teclas con la región o el panel en foco",
+                      "Haz clic en la región o el panel para darle el foco; desde el juego usa los atajos globales.")
+        for item in self._keys_group("live", "", "")[2:]:
+            lay.addWidget(item) if isinstance(item, QWidget) else lay.addLayout(item)
+        lay.addLayout(self._reset_button(keys, "Restablecer los valores numéricos"))
         lay.addStretch(1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setWidget(inner)
         return scroll
+
+    def _set_pause_key(self, combo):
+        self.settings.setValue("live_pause_key", combo)
+        self._pause_btn.set_value(combo)
+        if combo and is_risky(combo):
+            self._say("Tecla de pausa guardada. Ojo: es una tecla suelta; si el juego la usa para otra cosa, se activará igual.")
+        else:
+            self._say("Tecla de pausa guardada." if combo else "Sin tecla de pausa: la casilla «Pausar el juego» no hará nada.")
+        self.changed.emit()
+
+    def reload_pause_key(self):
+        """La tecla de pausa cambió desde fuera (al aplicar un perfil)."""
+        self._pause_btn.set_value(str(self.settings.value("live_pause_key", "")))
+
+    # --- perfiles ---
+    def _profiles_tab(self):
+        self._profile_list = QListWidget()
+        self._profile_list.currentItemChanged.connect(lambda *_: self._profile_buttons())
+        self._profile_list.itemDoubleClicked.connect(lambda _i: self._profile_use())
+        self.btn_p_use = QPushButton("Usar")
+        self.btn_p_use.setToolTip("Aplica idioma, modo de OCR, opciones, tecla de pausa y la región fija del perfil")
+        self.btn_p_rename = QPushButton("Renombrar")
+        self.btn_p_delete = QPushButton("Borrar")
+        self.btn_p_save = QPushButton("Guardar la configuración actual como…")
+        self.btn_p_save.setToolTip("Guarda el idioma, el modo, las opciones, la tecla de pausa y la región fija actuales")
+        self.btn_p_use.clicked.connect(self._profile_use)
+        self.btn_p_rename.clicked.connect(self._profile_rename)
+        self.btn_p_delete.clicked.connect(self._profile_delete)
+        self.btn_p_save.clicked.connect(self._profile_save)
+        self._profile_detail = self._intro("")
+        self._profile_detail.setMinimumHeight(48)
+        self._profile_list.currentItemChanged.connect(lambda *_: self._profile_describe())
+        side = QVBoxLayout()
+        for b in (self.btn_p_use, self.btn_p_rename, self.btn_p_delete):
+            side.addWidget(b)
+        side.addStretch(1)
+        body = QHBoxLayout()
+        body.addWidget(self._profile_list, 1)
+        body.addLayout(side)
+        page = self._page(
+            self._intro("Un perfil recuerda, para cada juego: la región fija, el idioma, el modo de OCR, las casillas del modo en vivo "
+                        "y la tecla de pausa. Elígelo también desde la ventana principal (selector «Perfil»)."),
+            body, self._profile_detail, self.btn_p_save)
+        self.reload_profiles()
+        return page
+
+    def reload_profiles(self, select: str = None):
+        current = select or (self._profile_list.currentItem().text() if self._profile_list.currentItem() else
+                             str(self.settings.value("profile_active", "")))
+        self._profile_list.blockSignals(True)
+        self._profile_list.clear()
+        for name in profiles.load(self.settings):
+            self._profile_list.addItem(name)
+        for i in range(self._profile_list.count()):
+            if self._profile_list.item(i).text() == current:
+                self._profile_list.setCurrentRow(i)
+        self._profile_list.blockSignals(False)
+        self._profile_buttons()
+        self._profile_describe()
+
+    def _profile_name(self):
+        item = self._profile_list.currentItem()
+        return item.text() if item else None
+
+    def _profile_buttons(self):
+        has = self._profile_name() is not None
+        for b in (self.btn_p_use, self.btn_p_rename, self.btn_p_delete):
+            b.setEnabled(has)
+
+    def _profile_describe(self):
+        name = self._profile_name()
+        data = profiles.load(self.settings).get(name) if name else None
+        if not data:
+            self._profile_detail.setText("Aún no hay perfiles." if self._profile_list.count() == 0 else "Elige un perfil.")
+            return
+        bits = []
+        if data.get("lang"):
+            bits.append(f"idioma «{data['lang']}»")
+        if data.get("mode"):
+            bits.append(f"modo «{data['mode']}»")
+        bits.append("con región fija" if "box" in data else "sin región")
+        key = (data.get("pause") or {}).get("key", "")
+        if key:
+            bits.append(f"pausa {global_label(key)}")
+        self._profile_detail.setText(f"«{name}»: " + ", ".join(bits) + ".")
+
+    def _profile_use(self):
+        name = self._profile_name()
+        if name:
+            self.profile_use.emit(name)
+            self._say(f"Perfil «{name}» aplicado.")
+
+    def _profile_save(self):
+        name, ok = QInputDialog.getText(self, "Guardar perfil", "Nombre del juego o perfil:", text=self._profile_name() or "")
+        name = name.strip()
+        if not ok or not name:
+            return
+        if name in profiles.load(self.settings) and QMessageBox.question(
+                self, "Guardar perfil", f"Ya existe «{name}». ¿Reemplazarlo con la configuración actual?") != QMessageBox.Yes:
+            return
+        self.profile_save.emit(name)
+        self.reload_profiles(select=name)
+        self._say(f"Perfil «{name}» guardado.")
+
+    def _profile_rename(self):
+        old = self._profile_name()
+        if not old:
+            return
+        new, ok = QInputDialog.getText(self, "Renombrar perfil", "Nombre nuevo:", text=old)
+        new = new.strip()
+        if not ok or not new or new == old:
+            return
+        if not profiles.rename(self.settings, old, new):
+            self._say(f"Ya existe un perfil llamado «{new}».", True)
+            return
+        if str(self.settings.value("profile_active", "")) == old:
+            self.settings.setValue("profile_active", new)
+        self.reload_profiles(select=new)
+        self.profiles_changed.emit()
+        self._say("Perfil renombrado.")
+
+    def _profile_delete(self):
+        name = self._profile_name()
+        if not name or QMessageBox.question(self, "Borrar perfil", f"¿Borrar el perfil «{name}»?") != QMessageBox.Yes:
+            return
+        profiles.delete(self.settings, name)
+        if str(self.settings.value("profile_active", "")) == name:
+            self.settings.setValue("profile_active", "")
+        self.reload_profiles()
+        self.profiles_changed.emit()
+        self._say("Perfil borrado.")
 
     def _look_tab(self):
         font = self._spin("live_panel_font", " px", 1)
@@ -381,14 +558,26 @@ class SettingsDialog(QDialog):
         bar.setCurrentIndex(max(0, bar.findData(get_ocr_bar(self.settings))))
         bar.currentIndexChanged.connect(lambda _i: (self.settings.setValue("ocr_bar", bar.currentData()), self.changed.emit()))
         self._ocr_bar = bar
+        scale = QSlider(Qt.Horizontal)
+        scale.setRange(NUMBERS["popup_scale"][1], NUMBERS["popup_scale"][2])
+        scale.setSingleStep(5)
+        scale.setPageStep(10)
+        scale.setValue(get_number(self.settings, "popup_scale"))
+        scale_value = QLabel(f"{scale.value()} %")
+        scale.valueChanged.connect(lambda v: (scale_value.setText(f"{v} %"), self._set_number("popup_scale", v)))
+        self._popup_scale = scale
+        scale_row = QHBoxLayout()
+        scale_row.addWidget(scale, 1)
+        scale_row.addWidget(scale_value)
         form = QFormLayout()
         form.addRow("Panel de traducción", style)
         form.addRow("Barra de modos OCR (japonés)", bar)
         form.addRow("Tamaño de letra del panel", font)
         form.addRow("Opacidad del fondo del texto sobre la región", row)
+        form.addRow("Tamaño de letra del diccionario (ventanita de palabras)", scale_row)
         reset = QPushButton("Restablecer esta pestaña")
         reset.clicked.connect(lambda: (font.setValue(NUMBERS["live_panel_font"][0]), style.setCurrentIndex(0), bar.setCurrentIndex(0),
-                                       opacity.setValue(NUMBERS["live_text_opacity"][0]), self._say("Valores restablecidos.")))
+                                       opacity.setValue(NUMBERS["live_text_opacity"][0]), scale.setValue(NUMBERS["popup_scale"][0]), self._say("Valores restablecidos.")))
         rrow = QHBoxLayout()
         rrow.addStretch(1)
         rrow.addWidget(reset)

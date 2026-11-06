@@ -7,11 +7,10 @@ from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 
 from dataclasses import replace
 
+from Cards.cards import build_card
 import Translator.languages as languages
 import DB.ja_grammar as ja_grammar
 from DB.dictionary import LookupResult
-from Cards.cards import build_card
-import Translator.languages as languages
 from UI.word_popup import iter_words
 
 
@@ -36,9 +35,13 @@ class WordService(QObject):
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
         self._hide_timer.timeout.connect(self._hide_if_idle)
+        self._shown = None                        # (palabra, compuesto, texto, posición) de la ventanita abierta
+        self.merge_getter = lambda: True          # ¿se unieron las líneas? (la ventana principal lo sustituye)
         if hasattr(popup, "entered"):
             popup.entered.connect(self._hide_timer.stop)
             popup.left.connect(lambda: self._hide_timer.start(HIDE_AFTER_LEAVE_MS))
+        if hasattr(popup, "save_requested"):
+            popup.save_requested.connect(self.save_shown)
 
     # --- palabras guardadas ---
     def is_saved(self, word: str, compound: str = "") -> bool:
@@ -124,6 +127,7 @@ class WordService(QObject):
 
     def hover(self, word: str, compound: str, global_pos):
         self._hide_timer.stop()
+        self._shown = (word, compound) + (self._ctx or (None, None))
         grammar = self._grammar()
         if not self.dictionary.available:
             script = getattr(self.dictionary, "build_hint", "build_dictionary.py")
@@ -144,6 +148,15 @@ class WordService(QObject):
             self.popup.show_message(text, global_pos, saved)
         else:
             self.popup.show_result(result, global_pos, saved)
+
+    def save_shown(self):
+        """«＋ Guardar» de la ventanita: guarda la palabra que muestra, igual que un clic sobre ella."""
+        if self._shown is None or self._shown[2] is None:
+            return
+        word, compound, text, start = self._shown
+        self.click(word, compound, text, start, bool(self.merge_getter()))
+        if hasattr(self.popup, "mark_saved"):
+            self.popup.mark_saved(self.is_saved(word, compound))
 
     def hide_popup(self):
         """Oculta la ventanita ya."""

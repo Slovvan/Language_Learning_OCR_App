@@ -19,17 +19,20 @@ vuelve con la lectura nueva. Para poder ver el juego por debajo, la región se e
 Para leer a mano, la región y el panel se vuelven invisibles un instante (así no se lee el propio texto) y se capturan solo esos píxeles.
 """
 import html as _html
-from PyQt5.QtCore import QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QGuiApplication, QColor, QFont, QFontMetrics, QPainter, QPen
+import time
+from PyQt5.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QGuiApplication, QColor, QFont, QFontMetrics, QPainter, QPen, QRegion
 from PyQt5.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QGridLayout, QPushButton, QSizeGrip, QSizePolicy, QTextBrowser, QWidget,
                              QVBoxLayout)
 
 from UI.app_settings import get_number, hotkey_label, key_action, load_keys
+from UI.game_pause import focus_window, game_window_at, send_combo
+from UI.live_options import checkbox as option_checkbox, OPTIONS
 from UI.capture import bgr_to_qpixmap, grab_region, grab_screen
 from UI.ocr_modes import ModeBar
-from UI.live import LiveController, signature
+from UI.live import LiveController, signature, changed_fraction
 from UI.live_ui_helpers import exclude_from_capture
-from UI.overlay import MARK, PENDING, sample_colors, uniform_font
+from UI.overlay import DIM, MARK, PENDING, sample_colors, uniform_font
 from UI.word_popup import iter_words
 
 READ_DELAY_MS = 150            # lo que se espera a que la región y el panel desaparezcan antes de capturar
@@ -92,27 +95,39 @@ class _Line:
 
 class FreezeScreen(QWidget):
     """Pantalla entera congelada: una captura a pantalla completa, por debajo de la región y del panel.
-    No recibe el mouse (los clics pasan al juego) ni toma el foco."""
+    No recibe el mouse (los clics pasan al juego) ni toma el foco. WA_TransparentForMouseEvents solo vale dentro de Qt:
+    en Windows hace falta WindowTransparentForInput (clics de verdad a través de la ventana) y WindowDoesNotAcceptFocus
+    (no se activa al hacer clic). Si no, un clic fuera de la región activaba esta ventana, que se subía encima de la
+    región y del panel y los tapaba: no se podía descongelar."""
 
     def __init__(self):
-        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
+                         | Qt.WindowTransparentForInput | Qt.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
         self._pix = None
+        self._hole = QRect()                 # la región (en coordenadas de esta ventana): ahí no se oscurece
 
-    def show_image(self, image, geometry: QRect):
+    def show_image(self, image, geometry: QRect, hole: QRect = None):
         self._pix = bgr_to_qpixmap(image)
+        self._hole = QRect(hole) if hole is not None else QRect()
         self.setGeometry(geometry)
         self.show()
+        self.lower()                          # por debajo de la región y del panel, que también están «siempre encima»
 
     def clear(self):
         self._pix = None
+        self._hole = QRect()
         self.hide()
 
     def paintEvent(self, _):
         if self._pix is not None:
             p = QPainter(self)
             p.drawPixmap(self.rect(), self._pix)
+            # igual que la captura congelada: se oscurece todo menos la región, que queda a la vista
+            if self._hole.isValid() and not self._hole.isEmpty():
+                p.setClipRegion(QRegion(self.rect()).subtracted(QRegion(self._hole)))
+            p.fillRect(self.rect(), DIM)
             p.end()
 
 
@@ -138,6 +153,7 @@ class RegionLayer(QWidget):
         self.text_visible = True            # «O»: se dibuja el texto sobre el original
         self.stale = False                  # la pantalla cambió: el texto dibujado ya no corresponde y se quita
         self.editing = False                # se está moviendo / estirando la región
+        self._frozen_image = None           # la misma imagen (BGR), para comparar al descongelar
         self._frozen = None                 # QPixmap de la región congelada (se dibuja opaca bajo el texto)
         self.bounds = None                  # límites (la pantalla) para mover la región
         self._drag = None                   # (zona, posición global inicial, región inicial)
@@ -196,6 +212,7 @@ class RegionLayer(QWidget):
 
     def set_frozen(self, image):
         """Congela la región con `image` (BGR, el recorte leído) o la descongela con None."""
+        self._frozen_image = image
         self._frozen = None if image is None else bgr_to_qpixmap(image)
         if self._frozen is not None:
             self.stale = False
@@ -412,6 +429,23 @@ class RegionLayer(QWidget):
                 return cell, cols
             cell -= 1
 
+    def _translation_font(self, text: str, box: QRectF) -> QFont:
+        """Letra de la traducción dibujada encima: nunca mayor que la del texto original (la mediana de sus líneas) y,
+        si no cabe en la región, se reduce hasta que quepa."""
+        sizes = sorted(l.font.pixelSize() for l in self._lines if l.font.pixelSize() > 0)
+        cap = sizes[len(sizes) // 2] if sizes else int(self.height() * 0.3)
+        size = max(9, min(cap, 40))
+        font = QFont(self.font())
+        font.setPixelSize(size)
+        while size > 9:
+            font.setPixelSize(size)
+            need = QFontMetrics(font).boundingRect(box.toRect(), Qt.TextWordWrap | Qt.AlignLeft, text).height()
+            if need <= box.height():
+                break
+            size -= 1
+        font.setPixelSize(size)
+        return font
+
     def _paint_vertical_translation(self, p, text: str):
         cell, cols = self._vertical_layout(text)
         font = QFont(self.font())
@@ -460,11 +494,10 @@ class RegionLayer(QWidget):
                 self._paint_vertical_translation(p, shown)
                 shown = ""
         if shown and self.text_visible and not self.editing and not self.stale:
-            font = QFont(self.font())
-            font.setPixelSize(max(12, min(32, int(self.height() * 0.4))))
-            p.setFont(font)
+            box = QRectF(self.rect()).adjusted(10, 6, -10, -6)
+            p.setFont(self._translation_font(shown, box))
             p.setPen(self._fg)
-            p.drawText(QRectF(self.rect()).adjusted(10, 6, -10, -6), Qt.AlignVCenter | Qt.TextWordWrap, shown)
+            p.drawText(box, Qt.AlignVCenter | Qt.TextWordWrap, shown)
         for li, line in enumerate(self._lines if self.text_visible and not self.editing and not self.stale and not over else []):
             bg = QColor(line.bg)
             bg.setAlpha(int(255 * self.opacity))
@@ -506,6 +539,75 @@ class RegionLayer(QWidget):
         p.end()
 
 
+QUICK_STYLE = """
+QuickOptions { background: rgb(24, 27, 35); border: 1px solid rgba(255,255,255,90); border-radius: 8px; }
+QLabel { color: #9aa3b2; font-size: 11px; }
+QLabel#sect { color: #7fa3b8; font-size: 11px; font-weight: bold; padding-top: 4px; }
+QCheckBox { color: #e8eef7; font-size: 13px; spacing: 7px; padding: 2px 0; }
+QPushButton { color: #f2f2f2; background: rgba(255,255,255,18); border: 1px solid rgba(255,255,255,50);
+    border-radius: 5px; padding: 3px 9px; font-size: 12px; }
+QPushButton:hover { background: rgba(255,255,255,45); }
+"""
+QUICK_SECTIONS = (("read", "Lectura"), ("panel", "Panel"))
+
+
+class QuickOptions(QFrame):
+    """Menú de la tuerca ⚙: las casillas del modo en vivo, a mano sin abrir Configuración. Aparece al pasar el mouse por la
+    tuerca, no roba el foco y se cierra solo poco después de que el mouse se aleja."""
+    settings_requested = pyqtSignal()
+    entered = pyqtSignal()
+    left = pyqtSignal()
+
+    def __init__(self, model):
+        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setObjectName("QuickOptions")
+        self.setStyleSheet(QUICK_STYLE)
+        self.boxes = {}
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 8, 12, 10)
+        lay.setSpacing(1)
+        for group, title in QUICK_SECTIONS:
+            lab = QLabel(title.upper())
+            lab.setObjectName("sect")
+            lay.addWidget(lab)
+            for key, _text, _tip, _default, g in OPTIONS:
+                if g == group:
+                    box = option_checkbox(model, key, self)
+                    box.setFocusPolicy(Qt.NoFocus)
+                    self.boxes[key] = box
+                    lay.addWidget(box)
+        more = QPushButton("Más ajustes…")
+        more.setFocusPolicy(Qt.NoFocus)
+        more.setToolTip("Abre Configuración ▸ Modo en vivo (tecla de pausa, tiempos, teclas, perfiles)")
+        more.clicked.connect(self.settings_requested)
+        lay.addSpacing(6)
+        lay.addWidget(more)
+        self.adjustSize()
+
+    def enterEvent(self, e):
+        self.entered.emit()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self.left.emit()
+        super().leaveEvent(e)
+
+    def show_near(self, anchor: QRect):
+        """Se coloca bajo la tuerca (o encima si abajo no cabe), sin salirse de la pantalla."""
+        self.adjustSize()
+        screen = QApplication.screenAt(anchor.center()) or QApplication.primaryScreen()
+        geo = screen.availableGeometry() if screen is not None else QRect(0, 0, 1920, 1080)
+        w, h = self.width(), self.height()
+        x = min(max(geo.left(), anchor.right() - w + 1), geo.right() - w + 1)
+        y = anchor.bottom() + 4
+        if y + h > geo.bottom():
+            y = max(geo.top(), anchor.top() - h - 4)
+        self.move(x, y)
+        self.show()
+        self.raise_()
+
+
 PANEL_STYLE = """
 LivePanel { background: rgb(18, 20, 26); border: 1px solid rgba(255,255,255,70); border-radius: 8px; }
 QLabel#head { color: #9aa3b2; font-size: 12px; }
@@ -532,6 +634,7 @@ class LivePanel(QFrame):
     key_pressed = pyqtSignal(int, int)
     entered = pyqtSignal()
     left = pyqtSignal()
+    settings_requested = pyqtSignal()            # «Más ajustes…» del menú ⚙
 
     def __init__(self):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
@@ -573,6 +676,19 @@ class LivePanel(QFrame):
         self.btn_close.setFixedWidth(30)
         self.btn_close.setFocusPolicy(Qt.NoFocus)
         self.btn_close.clicked.connect(self.close_requested)
+        self.btn_gear = QPushButton("⚙")
+        self.btn_gear.setObjectName("gear")
+        self.btn_gear.setToolTip("Opciones del modo en vivo (pasa el mouse; clic para dejarlo fijo)")
+        self.btn_gear.setFixedWidth(30)
+        self.btn_gear.setFocusPolicy(Qt.NoFocus)
+        self.btn_gear.installEventFilter(self)
+        self.quick = None                            # el menú de la tuerca (lo crea set_options)
+        self._quick_pinned = False
+        self._quick_timer = QTimer(self)
+        self._quick_timer.setSingleShot(True)
+        self._quick_timer.setInterval(400)
+        self._quick_timer.timeout.connect(self._quick_close)
+        self.btn_gear.clicked.connect(self._gear_clicked)
         self.btn_clear = QPushButton("Limpiar")
         self.btn_clear.setToolTip("Borra todo lo que muestra el panel (el registro principal de la app no se toca)")
         for b in (self.btn_copy, self.btn_clear):
@@ -603,6 +719,7 @@ class LivePanel(QFrame):
         head_row.addWidget(self.head, 1)
         head_row.addWidget(self.btn_copy)
         head_row.addWidget(self.btn_clear)
+        head_row.addWidget(self.btn_gear)
         head_row.addWidget(self.btn_close)
         lay.addLayout(head_row)
         self.mode_bar = ModeBar()                    # modos de OCR del japonés (se esconde con otros idiomas)
@@ -620,6 +737,71 @@ class LivePanel(QFrame):
                 max(self.btn_toggle.sizeHint().width(), self.btn_stop.sizeHint().width())]
         need = sum(cols) + 2 * 5 + self.grip.sizeHint().width() + 5 + 20 + 40
         self.setMinimumSize(max(PANEL_MIN.width(), need), PANEL_MIN.height() + 30)
+
+    # --- tuerca ⚙: menú con las casillas ---
+    def set_options(self, model):
+        if self.quick is not None:
+            self.quick.deleteLater()
+        self.quick = QuickOptions(model)
+        self.quick.entered.connect(self._quick_timer.stop)
+        self.quick.left.connect(self._quick_leave)
+        self.quick.settings_requested.connect(self._quick_more)
+        self.quick.settings_requested.connect(self.settings_requested)
+
+    def quick_visible(self) -> bool:
+        return self.quick is not None and self.quick.isVisible()
+
+    def busy(self) -> bool:
+        """¿El mouse está en el panel o en su menú ⚙? (para no esconder el panel mientras se usa)"""
+        return self.underMouse() or self.quick_visible() or self._drag is not None
+
+    def eventFilter(self, obj, ev):
+        if obj is self.btn_gear:
+            if ev.type() == QEvent.Enter:
+                self._quick_open()
+            elif ev.type() == QEvent.Leave:
+                self._quick_leave()
+        return super().eventFilter(obj, ev)
+
+    def _quick_open(self):
+        if self.quick is None:
+            return
+        self._quick_timer.stop()
+        if not self.quick.isVisible():
+            top_left = self.btn_gear.mapToGlobal(QPoint(0, 0))
+            self.quick.show_near(QRect(top_left, self.btn_gear.size()))
+
+    def _quick_leave(self):
+        if not self._quick_pinned:
+            self._quick_timer.start()
+
+    def _quick_close(self):
+        if self.quick is not None and not self._quick_pinned:
+            if self.quick.underMouse() or self.btn_gear.underMouse():
+                return
+            self.quick.hide()
+            self.left.emit()                         # el panel puede plegarse / esconderse ahora
+
+    def _gear_clicked(self):
+        self._quick_pinned = not self._quick_pinned
+        if self._quick_pinned:
+            self._quick_open()
+        elif self.quick is not None:
+            self._quick_timer.start()
+        self.btn_gear.setStyleSheet("background: rgba(0,200,255,70);" if self._quick_pinned else "")
+
+    def _quick_more(self):
+        self._quick_pinned = False
+        self.btn_gear.setStyleSheet("")
+        if self.quick is not None:
+            self.quick.hide()
+
+    def hideEvent(self, e):
+        self._quick_pinned = False
+        self.btn_gear.setStyleSheet("")
+        if self.quick is not None:
+            self.quick.hide()
+        super().hideEvent(e)
 
     def set_user_size(self, size):
         self._user_size = size if size is not None and size.width() >= PANEL_MIN.width() \
@@ -785,8 +967,8 @@ class LiveMode(QObject):
         self._popup_was_visible = False
         self.controller.capture.connect(self.on_auto_capture)
         self.controller.state_changed.connect(self._on_ctrl_state)
-        saved = win.settings.value("live_auto", False)
-        self.auto = saved in (True, "true", "1", 1)          # lectura automática (se recuerda)
+        self.options = win.live_options                      # las casillas: Configuración y tuerca del panel
+        self.auto = self.options.get("live_auto")            # lectura automática (se recuerda)
         self.capture_safe = False                            # ¿la región se excluye de las capturas? (hace falta para vigilar)
         self.kind = "manual"                                 # quién pidió la lectura en curso: «manual» o «auto»
         self.skip = False                                    # esa lectura se descarta (vacía o repetida)
@@ -795,6 +977,7 @@ class LiveMode(QObject):
         self.freezer = FreezeScreen()
         self._full = None                    # captura de la pantalla entera tomada junto con la lectura
         self._freeze_paused = False
+        self._force_freeze = False           # la lectura en curso la pidió «Congelar»: al terminar se congela
         self.panel = LivePanel()
         self.tab = PanelTab()
         self.tab_mode = False                # el panel es una viñeta que se abre al pasar el mouse
@@ -813,16 +996,18 @@ class LiveMode(QObject):
         self._reading = False                # entre pulsar «Leer» y recibir la captura
         self._image = None
         self.editing = False                 # se está moviendo / estirando la región
-        self.freeze_read = win.settings.value("live_freeze_read", False) in (True, "true", "1", 1)
-        self.freeze_auto = win.settings.value("live_freeze_auto", False) in (True, "true", "1", 1)
-        def opt(key, default):
-            v = win.settings.value(key, default)
-            return v in (True, "true", "1", 1)
-        self.show_original = opt("live_show_original", False)    # el panel muestra también el texto reconocido
-        self.keep_history = opt("live_history", False)           # el panel acumula las últimas lecturas
-        self.save_log = opt("live_save_log", True)               # cada lectura va al registro principal de la app
-        self.over_region = opt("live_over", False)               # la traducción se dibuja sobre la región
-        self.panel_temp = opt("live_panel_temp", False)          # el panel se esconde solo tras unos segundos
+        self.freeze_read = self.options.get("live_freeze_read")
+        self.freeze_auto = self.options.get("live_freeze_auto")
+        self.show_original = self.options.get("live_show_original")    # el panel muestra también el texto reconocido
+        self.keep_history = self.options.get("live_history")           # el panel acumula las últimas lecturas
+        self.save_log = self.options.get("live_save_log")              # cada lectura va al registro principal de la app
+        self.over_region = self.options.get("live_over")               # la traducción se dibuja sobre la región
+        self.panel_temp = self.options.get("live_panel_temp")          # el panel se esconde solo tras unos segundos
+        self._send_key = send_combo                                    # (las pruebas lo sustituyen)
+        self._game_window = game_window_at
+        self._focus = focus_window
+        self._key_guard_until = 0.0                                    # mientras dura, nuestras ventanas ignoran teclas
+        self._sent_pause = False                                       # ¿la pausa del juego la mandamos nosotros?
         self.history = []                                        # [{id, original, translation}], la más nueva primero
         self._entry_id = 0
         self._cur = None                                         # la entrada de la lectura en curso
@@ -849,12 +1034,15 @@ class LiveMode(QObject):
         self.panel.copy_requested.connect(self.copy_last)
         self.panel.mode_bar.mode_requested.connect(self.win.set_ocr_mode)
         self.tab.entered.connect(self._expand)
+        self.panel.set_options(self.options)
+        self.panel.settings_requested.connect(lambda: self.win.open_settings(2))
         self.panel.left.connect(self._collapse_later)
         self.panel.close_requested.connect(self.hide_panel)
         self.panel.clear_requested.connect(self.clear_history)
         self.panel.entry_deleted.connect(self.delete_entry)
         self.layer.set_over(self.over_region)
         self.panel.btn_auto.setChecked(self.auto)
+        self.options.changed.connect(self._on_option)
         self.layer.region_edited.connect(self._apply_rect)
         self.layer.edit_finished.connect(lambda: self.set_editing(False))
         win.chk_merge.toggled.connect(self.panel.set_merge)
@@ -876,6 +1064,10 @@ class LiveMode(QObject):
         self.active = True
         self.inflight = self._reading = False
         self.text_visible = True
+        self.layer.set_frozen(None)               # nada de una sesión anterior se queda pegado
+        self.freezer.clear()
+        self._freeze_paused = False
+        self.panel.btn_freeze.setText("Congelar (F)")
         self.layer.set_editing(False)
         self.editing = False
         self.panel.btn_edit.setText("Mover región (E)")
@@ -925,6 +1117,74 @@ class LiveMode(QObject):
 
     def has_region(self) -> bool:
         return self.box is not None
+
+    def _on_option(self, key: str, value: bool):
+        """Una casilla cambió (en Configuración, en la tuerca del panel o por un perfil)."""
+        if key == "live_auto":
+            if value != self.auto:
+                self.set_auto(value)
+        elif key == "live_freeze_read":
+            self.freeze_read = value
+        elif key == "live_freeze_auto":
+            self.freeze_auto = value
+        elif key == "live_show_original":
+            self.set_panel_options(original=value)
+        elif key == "live_history":
+            self.set_panel_options(history=value)
+        elif key == "live_save_log":
+            self.set_panel_options(save_log=value)
+        elif key == "live_over":
+            self.set_panel_options(over=value)
+        elif key == "live_panel_temp":
+            self.set_panel_options(temp=value)
+
+    # --- pausa del juego ---
+    def _pause_game(self, pause: bool):
+        """Al congelar pulsa la tecla de pausa del juego; al descongelar, otra vez (solo si la pulsamos nosotros)."""
+        key = str(self.win.settings.value("live_pause_key", ""))
+        if pause:
+            if not self.options.get("live_pause_on") or self._sent_pause:
+                return
+            if not key:
+                self.message.emit("Elige la tecla de pausa del juego en Configuración ▸ Modo en vivo.")
+                return
+            self._sent_pause = True
+            self._press(key, on_fail=True)
+        elif self._sent_pause:
+            self._sent_pause = False
+            self._press(key)
+
+    def key_guard(self) -> bool:
+        """¿Estamos pulsando una tecla de pausa? Entonces ni la región, ni el panel, ni los atajos globales la toman."""
+        return time.monotonic() < self._key_guard_until
+
+    def _press(self, key: str, on_fail: bool = False):
+        """Pulsa `key` en el juego. Si el foco lo tiene una ventana nuestra (se hizo clic en el panel o en «Congelar»),
+        antes se le devuelve el foco al juego: si no, la tecla se la comería nuestra propia ventana."""
+        self._key_guard_until = time.monotonic() + 0.8
+        wait = 0
+        try:
+            if self.box is not None:
+                x0, y0, x1, y1 = self.box
+                hwnd = self._game_window((x0 + x1) // 2, (y0 + y1) // 2)
+                if hwnd and self._focus(hwnd):
+                    wait = 120
+        except Exception:  # noqa: BLE001
+            wait = 0
+
+        def go():
+            ok = False
+            try:
+                ok = bool(self._send_key(key))
+            except Exception:  # noqa: BLE001
+                ok = False
+            if not ok and on_fail:
+                self._sent_pause = False
+                self.message.emit("No se pudo pulsar la tecla de pausa (hace falta pynput en Windows).")
+        if wait:
+            QTimer.singleShot(wait, go)
+        else:
+            go()
 
     # --- panel: original, historial, copiar, panel temporal ---
     def set_panel_options(self, original=None, history=None, save_log=None, over=None, temp=None):
@@ -988,7 +1248,7 @@ class LiveMode(QObject):
     def _temp_expired(self):
         if self.tab_mode or not self.panel_temp or not self.active or self.inflight or self._reading:
             return
-        if self.panel.isVisible() and self.panel.underMouse():
+        if self.panel.isVisible() and self.panel.busy():
             self._temp_timer.start()                   # el mouse está encima: se espera
             return
         self.panel.hide()
@@ -1026,12 +1286,14 @@ class LiveMode(QObject):
             return None
 
     def _set_frozen(self, image, full=None):
-        """Congela con `image` (el recorte leído) y, si hay `full`, toda la pantalla; o descongela con None."""
+        """Congela con `image` (el recorte leído) y, si hay `full`, toda la pantalla; o descongela con None.
+        Primero se arregla lo que se ve y al final se pulsa la tecla de pausa: pase lo que pase con ella, la pantalla se descongela."""
         self.layer.set_frozen(image)
         self.panel.btn_freeze.setText("Descongelar (F)" if image is not None else "Congelar (F)")
         if image is not None and full is not None and self.rect is not None:
             screen = QApplication.screenAt(self.rect.center()) or QApplication.primaryScreen()
-            self.freezer.show_image(full, screen.geometry())
+            geo = screen.geometry()
+            self.freezer.show_image(full, geo, self.rect.translated(-geo.topLeft()))
             self.layer.raise_()
             if self.panel.isVisible():
                 self.panel.raise_()
@@ -1046,14 +1308,19 @@ class LiveMode(QObject):
             if self.controller.active:
                 self.controller.detector.reset()
                 self.controller.set_paused(self.editing or self._hidden_for_select)
+        self._pause_game(image is not None)
 
     def toggle_freeze(self):
         """«F» / Ctrl+Alt+F: congela la pantalla entera con la última lectura, o la descongela."""
         if not self.active or self._reading:
             return
-        if self.layer.frozen:
-            self._set_frozen(None)
-        elif self._image is not None and self.layer.has_text:
+        if self.layer.frozen or self.freezer.isVisible():
+            self._unfreeze_checked()
+        elif self.inflight:
+            return                                   # hay una lectura en curso: ella decide si congela
+        elif self._image is None or not self.layer.has_text or self.layer.stale:
+            self.read_now(freeze=True)               # no hay texto vigente (o la pantalla ya cambió): se lee lo de ahora y se congela
+        else:
             self._reading = True                     # un instante invisibles, para que la captura salga limpia
             self._ghost(True)
             self.win.words.hide_popup()
@@ -1065,6 +1332,21 @@ class LiveMode(QObject):
                 if self.active and self.layer.has_text:
                     self._set_frozen(self._image, full)
             QTimer.singleShot(READ_DELAY_MS, grab)
+
+    def _unfreeze_checked(self):
+        """Descongela y comprueba que lo que se ve ahora sea lo mismo que lo congelado: si la pantalla cambió, el texto
+        dibujado ya no vale (se marca como viejo) y la vigilancia vuelve a leer."""
+        shown = self.layer._frozen_image
+        self._set_frozen(None)
+        if shown is None or self.box is None:
+            return
+        try:
+            now = signature(self._grab(self.box))
+            if changed_fraction(now, signature(shown)) > self.controller.detector.threshold:
+                self.layer.set_stale(True)
+                self.win.words.hide_popup()
+        except Exception:  # noqa: BLE001
+            pass
 
     def toggle_text(self):
         """«O» / Ctrl+Alt+H: muestra u oculta el texto dibujado sobre el original. La región (y el mouse) siguen."""
@@ -1114,7 +1396,7 @@ class LiveMode(QObject):
     def _collapse(self):
         if not (self.tab_mode and self._expanded):
             return
-        if self.panel.underMouse() or self.panel._drag is not None:
+        if self.panel.busy():
             return
         self._expanded = False
         self._sync_panel()
@@ -1196,6 +1478,8 @@ class LiveMode(QObject):
 
     def handle_key(self, key, modifiers=0):
         """Las teclas con la región o el panel en foco (se configuran en «Configuración»)."""
+        if self.key_guard():
+            return                                # es la tecla de pausa que acabamos de pulsar nosotros
         action = key_action(self.keys, Qt.KeyboardModifiers(modifiers), key)
         if action is None and key == Qt.Key_Escape and not self.keys.get("stop"):
             action = "stop"                       # Esc siempre detiene, aunque se le haya quitado la tecla
@@ -1226,9 +1510,10 @@ class LiveMode(QObject):
             self._pause_auto(False)
 
     # ------------------------------------------------------------------ lectura
-    def read_now(self):
+    def read_now(self, freeze=False):
         if not self.active or self._reading or self.inflight:
             return
+        self._force_freeze = bool(freeze)
         if self.editing:
             self.set_editing(False)
         self._reading = True
@@ -1247,13 +1532,16 @@ class LiveMode(QObject):
             image = self._grab(self.box)
         except Exception as exc:  # noqa: BLE001
             self._reading = False
+            self._force_freeze = False
             self._ghost(False)
             self.controller.set_busy(False)
             self.panel.set_note(f"En vivo · no se pudo capturar la región ({exc})")
             return
         self._reading = False
         self._image = image
-        self._full = self._grab_full() if self.freeze_read else None
+        self._full = self._grab_full() if (self.freeze_read or self._force_freeze) else None
+        if self.freeze_read or self._force_freeze:
+            self._pause_game(True)              # con la imagen ya tomada: el juego se detiene sin esperar al OCR
         self.kind = "manual"
         self.inflight = True
         self.skip = False
@@ -1281,7 +1569,7 @@ class LiveMode(QObject):
                               "(Windows 10 versión 2004 o superior). Usa la lectura manual.")
             on = False
         self.auto = on
-        self.win.settings.setValue("live_auto", on)
+        self.options.set("live_auto", on)
         self.panel.btn_auto.setChecked(on)
         if self.active:
             if on:
@@ -1345,6 +1633,8 @@ class LiveMode(QObject):
             return
         self._image = image
         self._full = self._grab_full() if self.freeze_auto else None
+        if self.freeze_auto:
+            self._pause_game(True)
         self.kind = "auto"
         self.skip = False
         self.inflight = True
@@ -1381,7 +1671,7 @@ class LiveMode(QObject):
         self._new_entry(res.text)
         self._reveal_panel()
         self.layer.set_result(res, self._image, self.rect)
-        want = self.freeze_auto if self.kind == "auto" else self.freeze_read
+        want = self.freeze_auto if self.kind == "auto" else (self.freeze_read or self._force_freeze)
         full, self._full = self._full, None
         self._set_frozen(self._image if want else None, full)
         self.layer.set_stale(False)
@@ -1403,6 +1693,9 @@ class LiveMode(QObject):
 
     def finished(self):
         self.inflight = False
+        self._force_freeze = False
+        if not self.layer.frozen:                 # la lectura terminó sin congelar nada (vacía, repetida, con error): se reanuda el juego
+            self._pause_game(False)
         self.skip = False
         self.controller.set_busy(False)
 

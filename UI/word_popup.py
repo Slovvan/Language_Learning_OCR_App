@@ -18,17 +18,28 @@ _COMPOUND_RE = re.compile(rf"{_L}+(?:['’-]{_L}+)*")      # compuesto con guion
 
 MAX_DEFINITION = 200   # caracteres; las definiciones más largas se cortan con "…"
 # Tamaños (px) de la ventanita: lo importante (palabra, lectura, traducción) va grande.
-LEMMA_PX = 28
-READING_PX = 20
+LEMMA_PX = 40          # palabra (escrituras con alfabeto)
+LEMMA_CJK_PX = 60      # kanji: mucho más grande, para leerlo de un vistazo
+READING_PX = 28
+SUB_LEMMA_PX = 28      # segunda entrada y siguientes (otra lectura, otra palabra)
+SUB_READING_PX = 18
 MEANING_PX = 17        # traducción al español (inglés) o significado (japonés)
 BODY_PX = 13           # definiciones en inglés, notas, ejemplos
+SENSE_LIMIT = 4        # significados por entrada antes de «▸ Más significados»
+MAX_PILLS = 5          # etiquetas visibles antes del botón «+N»
 MARK_COLOR = QColor(46, 160, 67, 80)    # fondo de las palabras ya guardadas
 PENDING_COLOR = QColor(235, 140, 30, 90)   # fondo de las palabras sin significado (pendientes)
 CHIP_H = 22            # alto (px) de cada etiqueta de nivel o frecuencia
 CHIP_GAP = 6           # separación vertical entre filas de etiquetas (va dentro de la imagen, transparente)
-CHIP_W = 104           # ancho de cada etiqueta
-CHIP_COL = 236         # ancho del bloque de etiquetas, a la derecha de la palabra (dos por fila)
-SAVED_BADGE = "<p style='margin:0 0 4px 0; color:#1b6b2f'><b>✓ Ya guardada en tu lista</b></p>"
+CHIP_W = 78            # ancho de cada etiqueta
+MORE_W = 40            # ancho del botón «+N»
+# Paleta oscura: la misma que el panel del modo en vivo.
+BG, BORDER = "#12141a", "#2f3a4d"
+FG, MUTED, POS = "#d6f1ff", "#7d8899", "#e0a35a"
+READING_COLOR, LINE_COLOR = "#6fd3ff", "#2c3444"
+LINK = "#9fb4d4"
+GRAM, GRAM_LABEL, GRAM_TEXT, GRAM_BG = "#c9a6ff", "#a98be0", "#e3dcf5", "#221b36"
+SAVED_BADGE = f"<p style='margin:0 0 6px 0; color:#6fe39a'><b>✓ Ya guardada en tu lista</b></p>"
 
 
 def find_word_latin(text: str, index: int):
@@ -68,31 +79,57 @@ def iter_words(text: str):
     return languages.active().iter_words(text)
 
 
+_BASE = {n: globals()[n] for n in ("LEMMA_PX", "LEMMA_CJK_PX", "READING_PX", "SUB_LEMMA_PX", "SUB_READING_PX", "MEANING_PX",
+                                   "BODY_PX", "CHIP_H", "CHIP_GAP", "CHIP_W", "MORE_W")}
+_BASE_WIDTH, _BASE_HEIGHT = 520, 600
+TEXT_SCALE = 1.0
+
+
+def set_text_scale(percent: int) -> float:
+    """Tamaño de la letra de la ventanita (70–200 %): escala todos los tamaños, las etiquetas y el ancho."""
+    global TEXT_SCALE
+    TEXT_SCALE = max(0.7, min(2.0, int(percent) / 100.0))
+    for name, base in _BASE.items():
+        globals()[name] = max(1, int(round(base * TEXT_SCALE)))
+    return TEXT_SCALE
+
+
 def chip_width(text: str) -> int:
     """Ancho (px) de las etiquetas: todas iguales, como las de tipo de Pokémon."""
     return CHIP_W
 
 
-def _chips_html(tags) -> str:
-    """Etiquetas como imágenes «píldora» (se dibujan en _PillBrowser.loadResource), en filas de dos
-    con aire entre ellas."""
-    out = []
-    for tag in tags or []:
-        c = chip_for(tag)
-        if c is None:
-            continue
-        text, color = c
-        src = "pill:" + quote(f"{color}|{text}", safe="")
-        out.append(f"<img src='{src}' width='{chip_width(text)}' height='{CHIP_H + CHIP_GAP}'>")
-    return " &nbsp;".join(out)
+def _pill_src(color: str, text: str, width: int) -> str:
+    return "pill:" + quote(f"{color}|{text}|{width}", safe="")
+
+
+def _chips_html(tags, open_: bool = False) -> str:
+    """Etiquetas como imágenes «píldora» (se dibujan en _PillBrowser.loadResource), en una fila. Si hay más de
+    MAX_PILLS, el resto queda tras un botoncito «+N» (enlace «tags:») que las muestra todas."""
+    chips = [c for c in (chip_for(t) for t in tags or []) if c is not None]
+    shown = chips if open_ else chips[:MAX_PILLS]
+    out = [f"<img src='{_pill_src(color, text, CHIP_W)}' width='{CHIP_W}' height='{CHIP_H + CHIP_GAP}'>" for text, color in shown]
+    if len(chips) > MAX_PILLS:
+        label = "▴" if open_ else f"+{len(chips) - MAX_PILLS}"
+        out.append(f"<a href='tags:toggle' style='text-decoration:none'><img src='{_pill_src('#4a5568', label, MORE_W)}' "
+                   f"width='{MORE_W}' height='{CHIP_H + CHIP_GAP}'></a>")
+    return " ".join(out)
+
+
+def _rule() -> str:
+    return (f"<div style='font-size:5px'>&nbsp;</div><table width='100%' cellspacing='0' cellpadding='0'><tr>"
+            f"<td bgcolor='{LINE_COLOR}' style='font-size:1px'><span style='font-size:1px'>&nbsp;</span></td></tr></table>"
+            f"<div style='font-size:5px'>&nbsp;</div>")
 
 
 _PILLS = {}
 
 
-def pill_image(text: str, color: str, width: int, height: int = CHIP_H, gap: int = CHIP_GAP) -> QImage:
+def pill_image(text: str, color: str, width: int, height: int = None, gap: int = None) -> QImage:
     """Píldora de color con el texto en blanco, al doble de resolución (se ve nítida al escalarla).
     Debajo lleva `gap` px transparentes: así las filas de etiquetas no quedan pegadas."""
+    height = CHIP_H if height is None else height
+    gap = CHIP_GAP if gap is None else gap
     key = (text, color, width, height, gap)
     if key in _PILLS:
         return _PILLS[key]
@@ -127,77 +164,131 @@ class _PillBrowser(QTextBrowser):
 
     def loadResource(self, rtype, url):
         if url.scheme() == "pill":
-            color, _sep, text = unquote(bytes(url.toEncoded()).decode("ascii")[5:]).partition("|")
-            return pill_image(text, color, chip_width(text))
+            color, _sep, rest = unquote(bytes(url.toEncoded()).decode("ascii")[5:]).partition("|")
+            text, _sep, width = rest.rpartition("|")
+            return pill_image(text, color, int(width) if width.isdigit() else CHIP_W)
         return super().loadResource(rtype, url)
 
 
-def render_html(result, saved: bool = False) -> str:
-    """HTML sencillo (subconjunto que entiende QTextDocument) para un LookupResult."""
+def _is_cjk(text: str) -> bool:
+    return any("\u3040" <= ch <= "\u9fff" for ch in text)
+
+
+def _grammar_html(entry) -> str:
+    """Forma gramatical: una caja morada con el patrón, su significado, nivel y un ejemplo."""
+    esc = html.escape
+    s = entry.senses[0] if entry.senses else None
+    inner = (f"<span style='font-size:11px; color:{GRAM_LABEL}; letter-spacing:1px'><b>GRAMÁTICA</b></span><br>"
+             f"<span style='font-size:{READING_PX - 4}px; font-weight:600; color:{GRAM}'>{esc(entry.lemma)}</span>")
+    if s is not None and s.definition:
+        inner += f" <span style='font-size:{MEANING_PX - 2}px; color:{GRAM_TEXT}'>&nbsp;{esc(s.definition)}</span>"
+    if entry.note:
+        inner += f"<br><span style='font-size:{BODY_PX - 1}px; color:{MUTED}'>{esc(entry.note)}</span>"
+    if s is not None and s.example:
+        jp, _sep, en = s.example.partition(" — ")
+        inner += f"<br><span style='font-size:{BODY_PX + 1}px; color:{GRAM_TEXT}'>{esc(jp)}</span>"
+        if en:
+            inner += f"<br><span style='font-size:{BODY_PX - 1}px; color:{MUTED}'><i>{esc(en)}</i></span>"
+    return (f"<table width='100%' cellspacing='0' cellpadding='9' style='margin:4px 0'><tr><td bgcolor='{GRAM_BG}'>{inner}</td></tr></table>"
+            "<div style='font-size:4px'>&nbsp;</div>")
+
+
+def hidden_senses(result) -> int:
+    """Significados que quedan escondidos mientras no se pulse «▸ Más significados»."""
+    return sum(max(0, len(e.senses) - SENSE_LIMIT) for e in result.entries if e.kind != "grammar")
+
+
+def copy_text(result) -> str:
+    """Texto que copia «⧉ Copiar»: la palabra, su lectura y los primeros significados."""
+    lines = []
+    for e in result.entries:
+        if e.kind == "grammar":
+            continue
+        head = e.lemma + (f" ({e.reading})" if e.reading else "")
+        meanings = []
+        for sense in e.senses[:SENSE_LIMIT]:
+            meanings.append(", ".join(sense.spanish[:4]) if sense.spanish else sense.definition)
+        lines.append(head + (": " + "; ".join(meanings) if meanings else ""))
+        if len(lines) >= 2:
+            break
+    return "\n".join(lines) or result.query
+
+
+def render_html(result, saved: bool = False, tags_open: bool = False, senses_open: bool = False, copied: bool = False) -> str:
+    """HTML sencillo (subconjunto que entiende QTextDocument) para un LookupResult, con la paleta oscura."""
     esc = html.escape
     parts = [SAVED_BADGE] if saved else []
     previous = None
     shown = set()                                      # (palabra, etiquetas) que ya se mostraron
+    first_word = True
+    grammar_parts = []                                 # la gramática va tras los significados, antes del pie
     for entry in result.entries:
-        if entry.kind == "grammar":                    # forma gramatical: encabezado discreto, sin numerar
-            parts.append(f"<p style='margin:6px 0 2px 0'><span style='font-size:{READING_PX}px; font-weight:600; "
-                         f"color:#6b3fa0'>{esc(entry.lemma)}</span> <span style='color:#888; font-size:{BODY_PX}px'>"
-                         f"gramática</span></p>")
-            if entry.note:
-                parts.append(f"<p style='margin:0 0 2px 0; color:#888; font-size:{BODY_PX}px'><i>{esc(entry.note)}</i></p>")
-            for s in entry.senses:
-                text = f"<span style='font-size:{MEANING_PX}px'>{esc(s.definition)}</span>"
-                if s.example:
-                    text += f"<br><span style='color:#555; font-size:{BODY_PX}px'><i>{esc(s.example)}</i></span>"
-                parts.append(f"<p style='margin:0 0 8px 0'>{text}</p>")
+        if entry.kind == "grammar":
+            grammar_parts.append(_grammar_html(entry))
             previous = entry
             continue
         if previous is not None and previous.kind == "function" and previous.lemma == entry.lemma:
-            head = f"<span style='color:#888; font-size:{BODY_PX}px'>{esc(entry.lemma)} — otros significados</span>"
+            head_html = f"<p style='margin:6px 0 3px 0'><span style='color:{MUTED}; font-size:{BODY_PX}px'>{esc(entry.lemma)} — otros significados</span></p>"
         else:
-            head = f"<span style='font-size:{LEMMA_PX}px; font-weight:600'>{esc(entry.lemma)}</span>"
+            cjk = _is_cjk(entry.lemma)
+            big = first_word
+            lemma_px = (LEMMA_CJK_PX if cjk else LEMMA_PX) if big else SUB_LEMMA_PX
+            reading_px = READING_PX if big else SUB_READING_PX
+            head = f"<span style='font-size:{lemma_px}px; font-weight:{500 if cjk else 600}; color:#ffffff'>{esc(entry.lemma)}</span>"
             if entry.reading:
-                head += (f" <span style='font-size:{READING_PX}px; color:#1f4f8f'>"
-                         f"{esc(entry.reading)}</span>")
+                head += f" &nbsp;<span style='font-size:{reading_px}px; color:{READING_COLOR}'>{esc(entry.reading)}</span>"
             if entry.lemma.lower() != result.query.lower():
-                head += f" <span style='color:#888; font-size:{BODY_PX}px'>← {esc(result.query)}</span>"
+                head += f" &nbsp;<span style='color:{MUTED}; font-size:{BODY_PX + 2}px'>← {esc(result.query)}</span>"
+            head_html = f"<p style='margin:{2 if big else 8}px 0 2px 0'>{head}</p>"
+            first_word = False
         previous = entry
-        head_html = f"<p style='margin:6px 0 3px 0'>{head}</p>"
         sig = (entry.lemma, tuple(entry.tags or ()))
-        chips = _chips_html(entry.tags) if sig not in shown else ""     # la misma palabra: etiquetas una vez
+        chips = _chips_html(entry.tags, tags_open) if sig not in shown else ""     # la misma palabra: etiquetas una vez
         if chips:
             shown.add(sig)
-            head_html = ("<table width='100%' cellspacing='0' cellpadding='0'><tr>"
-                         f"<td valign='middle'>{head_html}</td>"
-                         f"<td valign='top' align='right' width='{CHIP_COL}'>{chips}</td></tr></table>")
+            head_html += f"<p style='margin:0 0 2px 0'>{chips}</p>"
         parts.append(head_html)
+        parts.append(_rule())
 
         if entry.note:
-            parts.append(f"<p style='margin:0 0 3px 0; color:#888; font-size:{BODY_PX}px'>"
-                         f"<i>{esc(entry.note)}</i></p>")
-        for n, s in enumerate(entry.senses, 1):
+            parts.append(f"<p style='margin:0 0 3px 0; color:{MUTED}; font-size:{BODY_PX}px'><i>{esc(entry.note)}</i></p>")
+        senses = entry.senses if senses_open else entry.senses[:SENSE_LIMIT]
+        for n, s in enumerate(senses, 1):
             definition = s.definition if len(s.definition) <= MAX_DEFINITION else \
                 s.definition[:MAX_DEFINITION].rsplit(" ", 1)[0] + "…"
-            label = (f"<b>{n}.</b> <i style='color:#8a4b1f; font-size:{BODY_PX}px'>"
+            label = (f"<span style='color:{MUTED}'>{n}.</span> <i style='color:{POS}; font-size:{BODY_PX}px'>"
                      f"{POS_LABEL.get(s.pos, s.pos)}</i>")
-            if s.spanish:      # inglés: la traducción va grande y la definición en inglés, más pequeña
-                lines = [f"{label} <span style='font-size:{MEANING_PX}px; font-weight:600; color:#1b6b2f'>"
+            if s.spanish:      # inglés/francés: la traducción va grande y la definición, más pequeña
+                lines = [f"{label} <span style='font-size:{MEANING_PX + 1}px; font-weight:600; color:{FG}'>"
                          f"{esc(', '.join(s.spanish[:4]))}</span>"]
                 if definition:
-                    lines.append(f"<span style='color:#555; font-size:{BODY_PX}px'>{esc(definition)}</span>")
+                    lines.append(f"<span style='color:{MUTED}; font-size:{BODY_PX}px'>{esc(definition)}</span>")
             else:              # japonés: el significado en inglés es lo principal
-                lines = [f"{label} <span style='font-size:{MEANING_PX}px'>{esc(definition)}</span>"]
+                lines = [f"{label} <span style='font-size:{MEANING_PX + 1}px; font-weight:600; color:{FG}'>{esc(definition)}</span>"]
             if entry.kind == "function" and s.example:
-                lines.append(f"<span style='color:#555; font-size:{BODY_PX}px'><i>{esc(s.example)}</i></span>")
+                lines.append(f"<span style='color:#9aa7bb; font-size:{BODY_PX}px'><i>{esc(s.example)}</i></span>")
             if s.synonyms:
-                lines.append(f"<span style='color:#444; font-size:{BODY_PX}px'>≈ {esc(', '.join(s.synonyms[:5]))}</span>")
+                lines.append(f"<span style='color:#9aa7bb; font-size:{BODY_PX}px'>≈ {esc(', '.join(s.synonyms[:5]))}</span>")
             if s.antonyms:
-                lines.append(f"<span style='color:#a02020; font-size:{BODY_PX}px'>≠ {esc(', '.join(s.antonyms[:4]))}</span>")
-            parts.append("<p style='margin:0 0 6px 0'>" + "<br>".join(lines) + "</p>")
-        extra = entry.total - len(entry.senses)
+                lines.append(f"<span style='color:#e08a8a; font-size:{BODY_PX}px'>≠ {esc(', '.join(s.antonyms[:4]))}</span>")
+            parts.append("<p style='margin:0 0 7px 0'>" + "<br>".join(lines) + "</p>")
+        extra = entry.total - len(entry.senses)           # lo que el diccionario recortó (lo escondido por el límite va en el pie)
         if extra > 0:
-            parts.append(f"<p style='margin:0 0 6px 0; color:#888; font-size:{BODY_PX}px'>"
-                         f"+{extra} significado(s) más</p>")
+            parts.append(f"<p style='margin:0 0 6px 0; color:{MUTED}; font-size:{BODY_PX}px'>+{extra} significado(s) más</p>")
+    parts.extend(grammar_parts)
+    hidden = hidden_senses(result)
+    acts = []
+    if saved:
+        acts.append(f"<span style='color:#6fe39a'>✓ Guardada</span>")
+    else:
+        acts.append(f"<a href='act:save' style='color:{LINK}; text-decoration:none'>＋ Guardar</a>")
+    acts.append(f"<span style='color:#6fe39a'>✓ Copiado</span>" if copied else
+                f"<a href='act:copy' style='color:{LINK}; text-decoration:none'>⧉ Copiar</a>")
+    if hidden or senses_open and any(len(e.senses) > SENSE_LIMIT for e in result.entries):
+        acts.append(f"<a href='act:more' style='color:{LINK}; text-decoration:none'>"
+                    + ("▴ Menos significados" if senses_open else f"▸ Más significados (+{hidden})") + "</a>")
+    parts.append(_rule())
+    parts.append(f"<p style='margin:2px 0 0 0; font-size:{BODY_PX}px'>" + " &nbsp;&nbsp;·&nbsp;&nbsp; ".join(acts) + "</p>")
     return "".join(parts)
 
 
@@ -331,32 +422,53 @@ class WordPopup(QFrame):
     """Ventanita flotante con el resultado. No roba el foco; se puede entrar con el mouse y
     desplazar con la rueda para ver todos los significados."""
 
-    WIDTH = 440
-    MAX_HEIGHT = 460
+    WIDTH = _BASE_WIDTH
+    MAX_HEIGHT = _BASE_HEIGHT
     entered = pyqtSignal()      # el mouse entró en la ventanita
     left = pyqtSignal()         # el mouse salió
+    save_requested = pyqtSignal()      # «＋ Guardar» (la ventana de palabras guarda la que se está mostrando)
     _anchor = None              # (QRect global de la palabra, arriba?) → el popup se pega a su vértice
 
     def __init__(self):
         super().__init__(None, Qt.ToolTip | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setObjectName("wordPopup")
         self.setAttribute(Qt.WA_ShowWithoutActivating)
-        # Colores fijos: así se lee igual con el tema claro u oscuro del sistema.
+        # Colores fijos (paleta oscura, la del panel del modo en vivo): se lee igual con cualquier tema del sistema.
         self.setStyleSheet(
-            "QFrame#wordPopup { background:#fffdf6; border:1px solid #b9b192; border-radius:6px; }"
-            "QTextBrowser { background:transparent; color:#222; border:none; }")
+            f"QFrame#wordPopup {{ background:{BG}; border:1px solid {BORDER}; border-radius:12px; }}"
+            f"QTextBrowser {{ background:transparent; color:{FG}; border:none; }}"
+            "QScrollBar:vertical { background:transparent; width:8px; margin:6px 2px; }"
+            "QScrollBar::handle:vertical { background:#3a475c; border-radius:4px; min-height:24px; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background:transparent; }")
+        self._result = None                 # lo que se muestra (para «Copiar» y para volver a dibujar)
+        self._saved = False
+        self._tags_open = self._senses_open = self._copied = False
+        self._last_pos = QPoint()
         self._view = _PillBrowser()
         self._view.setFrameShape(QFrame.NoFrame)
         self._view.setOpenLinks(False)
+        self._view.anchorClicked.connect(self._on_anchor)
         self._view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self._view.document().setDocumentMargin(10)
+        self._view.document().setDocumentMargin(16)
         font = self._view.font()
         font.setPixelSize(BODY_PX)
         self._view.setFont(font)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(1, 1, 1, 1)
         layout.addWidget(self._view)
+
+    def set_scale(self, percent: int):
+        """Cambia el tamaño de la letra (y con él el ancho de la ventanita) y vuelve a dibujar lo que se muestra."""
+        set_text_scale(percent)
+        self.WIDTH = int(round(_BASE_WIDTH * TEXT_SCALE))
+        self.MAX_HEIGHT = int(round(_BASE_HEIGHT * max(1.0, TEXT_SCALE)))
+        font = self._view.font()
+        font.setPixelSize(BODY_PX)
+        self._view.setFont(font)
+        if self.isVisible() and self._result is not None:
+            self._render()
 
     def plain_text(self) -> str:
         return self._view.toPlainText()
@@ -371,11 +483,49 @@ class WordPopup(QFrame):
         return self._view.verticalScrollBar().maximum() > 0
 
     def show_result(self, result, global_pos: QPoint, saved: bool = False):
-        self._show(render_html(result, saved), global_pos)
+        if result is not self._result:                    # otra palabra: todo plegado otra vez
+            self._tags_open = self._senses_open = self._copied = False
+        self._result, self._saved, self._last_pos = result, bool(saved), QPoint(global_pos)
+        self._render(global_pos)
 
     def show_message(self, text: str, global_pos: QPoint, saved: bool = False):
+        self._result = None
         badge = SAVED_BADGE if saved else ""
-        self._show(f"{badge}<span style='color:#666'>{html.escape(text)}</span>", global_pos)
+        self._show(f"{badge}<span style='color:{MUTED}'>{html.escape(text)}</span>", global_pos)
+
+    def _render(self, pos: QPoint = None):
+        if self._result is None:
+            return
+        self._show(render_html(self._result, self._saved, self._tags_open, self._senses_open, self._copied),
+                   pos if pos is not None else self._last_pos, keep_scroll=pos is None)
+
+    def mark_saved(self, saved: bool = True):
+        """La palabra mostrada se guardó (o dejó de estarlo): cambia el badge y el pie."""
+        if self._result is not None and self.isVisible():
+            self._saved = bool(saved)
+            self._render()
+
+    def _on_anchor(self, url):
+        link = url.toString()
+        if link == "tags:toggle":
+            self._tags_open = not self._tags_open
+        elif link == "act:more":
+            self._senses_open = not self._senses_open
+        elif link == "act:copy" and self._result is not None:
+            QApplication.clipboard().setText(copy_text(self._result))
+            self._copied = True
+            QTimer.singleShot(1500, self._end_copied)
+        elif link == "act:save":
+            self.save_requested.emit()
+            return
+        else:
+            return
+        self._render()
+
+    def _end_copied(self):
+        if self._copied:
+            self._copied = False
+            self._render()
 
     def scroll_by(self, delta: int):
         """Desplaza el contenido con un delta de rueda (120 por muesca; positivo = hacia arriba)."""
@@ -386,21 +536,27 @@ class WordPopup(QFrame):
         self._view.setHtml(markup)
         doc = self._view.document()
         doc.setTextWidth(self.WIDTH - 2)
-        return int(doc.size().height()) + 4
+        return int(doc.size().height()) + 6
 
-    def _show(self, markup: str, global_pos: QPoint):
+    def _show(self, markup: str, global_pos: QPoint, keep_scroll: bool = False):
         screen = QApplication.screenAt(global_pos) or QApplication.primaryScreen()
         area = screen.availableGeometry()
         limit = min(self.MAX_HEIGHT, int(area.height() * 0.6))
         height = self._measure(markup)
+        self._view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)       # cabe: sin barra (así lo medido es exacto)
         if height > limit:       # no cabe: se desplaza, y se avisa
-            markup += f"<p style='color:#999; font-size:{BODY_PX}px'>↕ Rueda del mouse para ver más</p>"
+            self._view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            markup += f"<p style='color:{MUTED}; font-size:{BODY_PX}px'>↕ Rueda del mouse para ver más</p>"
             self._measure(markup)
             height = limit
+        before = self._view.verticalScrollBar().value()
         self._view.setFixedSize(self.WIDTH, height)
         self.setFixedSize(self.WIDTH + 2, height + 2)       # +2: borde de 1 px
-        self._view.verticalScrollBar().setValue(0)
-        if self._anchor is not None:
+        self._view.verticalScrollBar().setValue(before if keep_scroll else 0)
+        if keep_scroll and self.isVisible():        # «+», «Más significados», «Copiar»…: la ventanita no se mueve, solo crece hacia abajo
+            x = max(area.left(), min(self.x(), area.right() - self.width()))
+            y = max(area.top(), min(self.y(), area.bottom() - self.height()))
+        elif self._anchor is not None:
             rect, above = self._anchor
             x = rect.left()
             y = rect.top() - self.height() if above else rect.bottom() + 1
