@@ -70,6 +70,7 @@ def _has_simplemma() -> bool:
 class MainWindow(QWidget):
     process_requested = pyqtSignal(object, bool)   # imagen, unir_lineas
     card_requested = pyqtSignal(int, str, str)     # id de tarjeta, frase, palabra a traducir ("" = ninguna)
+    glossary_requested = pyqtSignal(int, str)      # id de una palabra pendiente y su frase, para traducirla
     configure_requested = pyqtSignal(str, str)     # idioma del juego, modo de OCR
 
     def __init__(self):
@@ -115,6 +116,7 @@ class MainWindow(QWidget):
         self.words.saved_changed.connect(self._cards_changed)
         self.words.message.connect(self._on_word_message)
         self.words.card_requested.connect(self.card_requested)
+        self.words.glossary_requested.connect(self.glossary_requested)
 
         # --- UI ---
         self.btn_capture = QPushButton("Capturar región")
@@ -233,6 +235,8 @@ class MainWindow(QWidget):
         self.configure_requested.connect(self.worker.configure)
         self.process_requested.connect(self.worker.process)
         self.card_requested.connect(self.worker.translate_for_card)
+        self.glossary_requested.connect(self.worker.translate_for_glossary)
+        self.worker.glossary_translated.connect(self.on_glossary_translated)
         self.worker.status.connect(self.status.setText)
         self.worker.ready.connect(self.on_ready)
         self.worker.result.connect(self.on_result)
@@ -419,6 +423,10 @@ class MainWindow(QWidget):
         if self.words.card_translated(card_id, sentence_es, word_es) and self.cards_window is not None:
             self.cards_window.reload()
 
+    def on_glossary_translated(self, entry_id, sentence_es):
+        if self.words.glossary_translated(entry_id, sentence_es) and self.glossary_window is not None:
+            self.glossary_window.reload()
+
     def _cards_changed(self):
         """Tras guardar o borrar: actualiza resaltado, contador y lista."""
         self.refresh_marks()
@@ -439,7 +447,8 @@ class MainWindow(QWidget):
         lang = languages.active().code
         if self.glossary_window is None:
             self.glossary_window = GlossaryWindow(
-                self.glossary, lambda word: self.words.dictionary.key_for(word, ""), self)
+                self.glossary, lambda word: self.words.dictionary.key_for(word, ""), self,
+                make_card=self.words.card_from_entry, has_card=self.words.has_card_for, settings=self.settings)
             self.glossary_window.changed.connect(self._cards_changed)
         self.glossary_window.set_language(lang)
         self.glossary_window.show()

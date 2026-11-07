@@ -427,7 +427,7 @@ class WordPopup(QFrame):
     entered = pyqtSignal()      # el mouse entró en la ventanita
     left = pyqtSignal()         # el mouse salió
     save_requested = pyqtSignal()      # «＋ Guardar» (la ventana de palabras guarda la que se está mostrando)
-    _anchor = None              # (QRect global de la palabra, arriba?) → el popup se pega a su vértice
+    _anchor = None              # (QRect global de la palabra, arriba?, al costado?) → el popup se pega a la palabra
 
     def __init__(self):
         super().__init__(None, Qt.ToolTip | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
@@ -473,10 +473,12 @@ class WordPopup(QFrame):
     def plain_text(self) -> str:
         return self._view.toPlainText()
 
-    def set_anchor(self, rect=None, above: bool = False):
+    def set_anchor(self, rect=None, above: bool = False, side: bool = False):
         """Pega el popup al rectángulo `rect` (global) de la palabra: arriba o abajo de él, alineado a su
-        borde izquierdo, para no estorbar el recorrido del mouse. `None` vuelve a ubicarlo junto al cursor."""
-        self._anchor = None if rect is None else (QRect(rect), bool(above))
+        borde izquierdo, para no estorbar el recorrido del mouse. Con `side` (texto vertical) va a un costado,
+        alineado a su borde de arriba: a la derecha (las columnas que ya leíste) o, si no cabe, a la izquierda.
+        `None` vuelve a ubicarlo junto al cursor."""
+        self._anchor = None if rect is None else (QRect(rect), bool(above), bool(side))
 
     @property
     def scrollable(self) -> bool:
@@ -557,13 +559,20 @@ class WordPopup(QFrame):
             x = max(area.left(), min(self.x(), area.right() - self.width()))
             y = max(area.top(), min(self.y(), area.bottom() - self.height()))
         elif self._anchor is not None:
-            rect, above = self._anchor
-            x = rect.left()
-            y = rect.top() - self.height() if above else rect.bottom() + 1
-            if y < area.top():                      # no cabe arriba: abajo (y al revés)
-                y = rect.bottom() + 1
-            elif y + self.height() > area.bottom() + 1 and not above:
-                y = rect.top() - self.height()
+            rect, above, side = self._anchor
+            if side:                                # texto vertical: a un costado, a la altura de la palabra
+                gap = 6
+                x = rect.right() + 1 + gap
+                if x + self.width() > area.right() + 1:     # no cabe a la derecha: a la izquierda
+                    x = rect.left() - self.width() - gap
+                y = rect.top()
+            else:
+                x = rect.left()
+                y = rect.top() - self.height() if above else rect.bottom() + 1
+                if y < area.top():                  # no cabe arriba: abajo (y al revés)
+                    y = rect.bottom() + 1
+                elif y + self.height() > area.bottom() + 1 and not above:
+                    y = rect.top() - self.height()
             x = max(area.left(), min(x, area.right() - self.width()))
             y = max(area.top(), min(y, area.bottom() - self.height()))
         else:

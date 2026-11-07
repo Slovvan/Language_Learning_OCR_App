@@ -135,7 +135,7 @@ class RegionLayer(QWidget):
     """La región fija. Siempre recibe el mouse. Vacía solo se ve su marco; tras leer dibuja el texto sobre el original."""
     word_context = pyqtSignal(str, int)
     word_hovered = pyqtSignal(str, str, QPoint)
-    word_anchor = pyqtSignal(QRect, bool)      # rect global de la palabra, y si el popup va arriba
+    word_anchor = pyqtSignal(QRect, bool, bool)   # rect global de la palabra, si el popup va arriba y si va al costado (vertical)
     hover_ended = pyqtSignal()
     wheel_moved = pyqtSignal(int)
     word_clicked = pyqtSignal(str, str, int, str)       # palabra, compuesto, posición, texto completo
@@ -340,7 +340,7 @@ class RegionLayer(QWidget):
             r = (QRectF(line.patch.left(), w[4], line.patch.width(), w[5] - w[4]) if line.vertical
                  else QRectF(w[4], line.patch.top(), w[5] - w[4], line.patch.height())).toAlignedRect()
             self._hover_pending = (line.text, w[0], w[2], w[3], e.globalPos(),
-                                   QRect(self.mapToGlobal(r.topLeft()), r.size()))
+                                   QRect(self.mapToGlobal(r.topLeft()), r.size()), bool(line.vertical))
             self._timer.start()
         self.setCursor(Qt.PointingHandCursor if hit else Qt.ArrowCursor)
         self.update()
@@ -348,11 +348,11 @@ class RegionLayer(QWidget):
     def _emit_hover(self):
         if self._hover_pending is None:
             return
-        text, start, word, compound, pos, grect = self._hover_pending
+        text, start, word, compound, pos, grect, vertical = self._hover_pending
         self._hover_shown = True
         screen = QApplication.screenAt(grect.center()) or QApplication.primaryScreen()
         above = self.geometry().center().y() > screen.geometry().center().y()   # región en la mitad inferior
-        self.word_anchor.emit(grect, above)
+        self.word_anchor.emit(grect, above, vertical)
         self.word_context.emit(text, start)
         self.word_hovered.emit(word, compound, pos)
 
@@ -972,7 +972,6 @@ class LiveMode(QObject):
         self.capture_safe = False                            # ¿la región se excluye de las capturas? (hace falta para vigilar)
         self.kind = "manual"                                 # quién pidió la lectura en curso: «manual» o «auto»
         self.skip = False                                    # esa lectura se descarta (vacía o repetida)
-        self._paused_before = False
         self.layer = RegionLayer()
         self.freezer = FreezeScreen()
         self._full = None                    # captura de la pantalla entera tomada junto con la lectura
@@ -1299,15 +1298,8 @@ class LiveMode(QObject):
                 self.panel.raise_()
         else:
             self.freezer.clear()
-        if image is not None:                       # congelado: no se vigila el cambio de texto
-            if self.controller.active and not self.controller.paused and not self._freeze_paused:
-                self.controller.set_paused(True)
-                self._freeze_paused = True
-        elif self._freeze_paused:
-            self._freeze_paused = False
-            if self.controller.active:
-                self.controller.detector.reset()
-                self.controller.set_paused(self.editing or self._hidden_for_select)
+        self._freeze_paused = image is not None     # congelado: no se vigila el cambio de texto
+        self._sync_pause()
         self._pause_game(image is not None)
 
     def toggle_freeze(self):
@@ -1453,7 +1445,9 @@ class LiveMode(QObject):
         self.editing = on
         self.win.words.hide_popup()
         self.layer.set_editing(on)
-        self._pause_auto(on)
+        if on and (self.layer.frozen or self.freezer.isVisible() or self._freeze_paused):
+            self._set_frozen(None)                 # no se mueve la región sobre una pantalla congelada (y el juego sigue)
+        self._sync_pause()
         self.panel.btn_edit.setText("Terminar edición (E)" if on else "Mover región (E)")
         self.panel.set_note("En vivo · editando la región: arrastra dentro para moverla o los bordes para estirarla"
                             if on else "En vivo · región actualizada")
@@ -1574,28 +1568,33 @@ class LiveMode(QObject):
         if self.active:
             if on:
                 self.controller.start(self.box)
-                self._pause_auto(self.editing or self._hidden_for_select)
+                self._sync_pause()
             else:
                 self.controller.stop()
                 self.layer.set_stale(False)
             self.panel.set_note(self._base_note())
         self.auto_changed.emit(on)
 
-    def _pause_auto(self, pause: bool):
-        """Se deja de vigilar mientras se edita la región o se elige otra; al volver se empieza de cero."""
+    def _pause_auto(self, pause: bool = True):
+        """Compatibilidad: quien llama ya cambió su motivo de pausa (editando, eligiendo región...); se recalcula todo."""
+        self._sync_pause()
+
+    def _sync_pause(self):
+        """La vigilancia automática está en pausa mientras haya CUALQUIER motivo: pantalla congelada, región en edición o
+        elección de otra región. Se calcula siempre desde los motivos (nada de «recordar el estado anterior»: antes, editar
+        con la pantalla congelada dejaba la pausa del congelado grabada y la lectura automática no volvía hasta cerrar la app)."""
         if not self.controller.active:
             return
-        if pause:
-            self._paused_before = self.controller.paused
-            self.controller.set_paused(True)
-        else:
-            self.controller.detector.reset()
-            self.controller.set_paused(self._paused_before)
+        want = bool(self._freeze_paused or self.editing or self._hidden_for_select)
+        was = self.controller.paused
+        self.controller.set_paused(want)
+        if was and not want:
+            self.controller.detector.reset()          # al reanudar se empieza de cero: lo de antes ya no cuenta
 
-    def _set_anchor(self, rect, above):
+    def _set_anchor(self, rect, above, side=False):
         popup = getattr(self.win, "popup", None)
         if popup is not None:
-            popup.set_anchor(rect, above)
+            popup.set_anchor(rect, above, side)
 
     def _clear_anchor(self):
         popup = getattr(self.win, "popup", None)

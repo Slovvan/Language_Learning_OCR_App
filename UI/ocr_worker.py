@@ -13,6 +13,7 @@ class OcrWorker(QObject):
     result = pyqtSignal(object)     # OcrResult (texto original)
     translated = pyqtSignal(str)    # texto traducido
     card_translated = pyqtSignal(int, str, str)   # id de tarjeta, frase traducida, palabra traducida
+    glossary_translated = pyqtSignal(int, str)    # id de la entrada de Pendientes, frase traducida
     done = pyqtSignal()             # terminó una captura (con o sin error)
     failed = pyqtSignal(str)
 
@@ -119,6 +120,16 @@ class OcrWorker(QObject):
             return res
         from dataclasses import replace
         return replace(res, lines=lines, text="\n".join(t for t, _ in lines))
+
+    @pyqtSlot(int, str)
+    def translate_for_glossary(self, entry_id, sentence):
+        """Traduce la frase de una palabra pendiente (así la tarjeta que salga de ella ya la trae)."""
+        if self._translator is None or not sentence:
+            return
+        try:
+            self.glossary_translated.emit(entry_id, self._translator.translate_sentence(sentence))
+        except Exception as exc:  # noqa: BLE001
+            self.status.emit(f"No se pudo traducir la frase: {exc}")
 
     @pyqtSlot(int, str, str)
     def translate_for_card(self, card_id, sentence, word):

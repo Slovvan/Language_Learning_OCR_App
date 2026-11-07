@@ -7,7 +7,7 @@ importarla de vuelta.
 from datetime import datetime
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import QEvent, Qt, pyqtSignal
 from PyQt5.QtWidgets import (QAbstractItemView, QCheckBox, QFileDialog, QFormLayout, QHBoxLayout,
                              QHeaderView, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton,
                              QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
@@ -23,10 +23,13 @@ class GlossaryWindow(QWidget):
 
     changed = pyqtSignal()
 
-    def __init__(self, glossary, key_for, parent=None):
+    def __init__(self, glossary, key_for, parent=None, make_card=None, has_card=None, settings=None):
         super().__init__(parent, Qt.Window)
         self.glossary = glossary
         self.key_for = key_for                  # función palabra -> clave (la de la ventana principal)
+        self.make_card = make_card              # entrada -> tarjeta nueva (o None); sin ella no hay botón ni interruptor
+        self.has_card = has_card                # entrada -> ¿ya tiene tarjeta?
+        self.settings = settings                # QSettings: recuerda el interruptor «Crear tarjeta…»
         self.lang = "en"
         self._loading = False
         self._current_id = None
@@ -57,7 +60,9 @@ class GlossaryWindow(QWidget):
         self.ed_meaning = QPlainTextEdit()
         self.ed_meaning.setPlaceholderText("Una línea por significado. Al escribirlo, la palabra deja de estar pendiente.")
         self.ed_sentence = QPlainTextEdit()
-        for box in (self.ed_meaning, self.ed_sentence):
+        self.ed_sentence_es = QPlainTextEdit()
+        self.ed_sentence_es.setPlaceholderText("Traducción de la frase (se rellena sola al pulsar la palabra).")
+        for box in (self.ed_meaning, self.ed_sentence, self.ed_sentence_es):
             box.setFixedHeight(66)
             box.setTabChangesFocus(True)
         form = QFormLayout()
@@ -66,6 +71,21 @@ class GlossaryWindow(QWidget):
         form.addRow("Lectura", self.ed_reading)
         form.addRow("Significado", self.ed_meaning)
         form.addRow("Frase", self.ed_sentence)
+        form.addRow("Traducción", self.ed_sentence_es)
+
+        self.chk_auto_card = QCheckBox("Crear tarjeta al guardar el significado")
+        self.chk_auto_card.setToolTip("Cuando le escribes el significado a una palabra, se crea su tarjeta al pasar a otra palabra "
+                                      "o al salir de esta ventana (con la frase guardada y su traducción).")
+        self.btn_card = QPushButton("Guardar y crear tarjeta")
+        self.btn_card.setToolTip("Crea ya la tarjeta de la palabra seleccionada, con tu significado, su frase y la traducción.")
+        card_row = QHBoxLayout()
+        card_row.addWidget(self.chk_auto_card)
+        card_row.addStretch(1)
+        card_row.addWidget(self.btn_card)
+        self.chk_auto_card.setVisible(make_card is not None)
+        self.btn_card.setVisible(make_card is not None)
+        if settings is not None:
+            self.chk_auto_card.setChecked(settings.value("glossary_auto_card", False) in (True, "true", "1", 1))
 
         self.btn_delete = QPushButton("Eliminar seleccionadas")
         self.btn_export = QPushButton("Exportar (.tsv)")
@@ -85,6 +105,7 @@ class GlossaryWindow(QWidget):
         layout.addLayout(top)
         layout.addWidget(self.table, 1)
         layout.addLayout(form)
+        layout.addLayout(card_row)
         layout.addLayout(buttons)
         layout.addWidget(self.info)
 
@@ -94,6 +115,9 @@ class GlossaryWindow(QWidget):
         self.ed_reading.textEdited.connect(lambda t: self._edited("reading", t))
         self.ed_meaning.textChanged.connect(lambda: self._edited("meaning", self.ed_meaning.toPlainText()))
         self.ed_sentence.textChanged.connect(lambda: self._edited("sentence", self.ed_sentence.toPlainText()))
+        self.ed_sentence_es.textChanged.connect(lambda: self._edited("sentence_es", self.ed_sentence_es.toPlainText()))
+        self.chk_auto_card.toggled.connect(self._auto_card_toggled)
+        self.btn_card.clicked.connect(self.create_card)
         self.btn_delete.clicked.connect(self.delete_selected)
         self.btn_export.clicked.connect(lambda: self.export())
         self.btn_import.clicked.connect(lambda: self.import_file())
@@ -106,6 +130,7 @@ class GlossaryWindow(QWidget):
         self.form.labelForField(self.ed_reading).setVisible(lang == "ja")
         self.ed_reading.setVisible(lang == "ja")
         self.form.labelForField(self.ed_sentence).setText(f"Frase ({pack.source_name})")
+        self.form.labelForField(self.ed_sentence_es).setText(f"Traducción ({pack.target_name})")
         self.reload()
 
     # --- contenido ---
@@ -130,7 +155,8 @@ class GlossaryWindow(QWidget):
 
     def _fill_row(self, row, e):
         word = f"{e.word}  【{e.reading}】" if e.reading else e.word
-        values = (word, "pendiente" if e.pending else "con significado",
+        state = "pendiente" if e.pending else ("con tarjeta" if self._has_card(e) else "con significado")
+        values = (word, state,
                   " · ".join(e.meaning.splitlines()), " ".join(e.sentence.split()))
         for col, value in enumerate(values):
             item = self.table.item(row, col)
@@ -140,6 +166,9 @@ class GlossaryWindow(QWidget):
             item.setText(value)
             item.setToolTip(value)
         self.table.item(row, 0).setData(Qt.UserRole, e.id)
+
+    def _has_card(self, entry) -> bool:
+        return bool(self.has_card is not None and entry is not None and self.has_card(entry))
 
     def _row_of(self, entry_id):
         for row in range(self.table.rowCount()):
@@ -154,6 +183,19 @@ class GlossaryWindow(QWidget):
         self.count.setText(f"{pending} pendiente(s) · {total - pending} con significado — {name}")
         self.btn_delete.setEnabled(bool(self.selected_ids()))
         self.btn_export.setEnabled(total > 0)
+        self._update_card_button()
+
+    def _update_card_button(self):
+        entry = self.glossary.get(self._current_id) if self._current_id is not None else None
+        if entry is None or entry.pending:
+            self.btn_card.setEnabled(False)
+            self.btn_card.setToolTip("Escribe primero el significado de la palabra.")
+        elif self._has_card(entry):
+            self.btn_card.setEnabled(False)
+            self.btn_card.setToolTip("Esta palabra ya tiene tarjeta.")
+        else:
+            self.btn_card.setEnabled(self.make_card is not None)
+            self.btn_card.setToolTip("Crea ya la tarjeta de la palabra seleccionada, con tu significado, su frase y la traducción.")
 
     # --- editor ---
     @staticmethod
@@ -168,6 +210,8 @@ class GlossaryWindow(QWidget):
         ids = self.selected_ids()
         previous = self._current_id
         self._current_id = ids[0] if len(ids) == 1 else None
+        if previous is not None and previous != self._current_id:
+            self._auto_card(previous)                       # dejas la palabra: si está lista, se crea su tarjeta
         entry = self.glossary.get(self._current_id) if self._current_id is not None else None
         same = entry is not None and entry.id == previous
         self._loading = True
@@ -175,8 +219,9 @@ class GlossaryWindow(QWidget):
         self._load(self.ed_reading, entry.reading if entry else "", same)
         self._load(self.ed_meaning, entry.meaning if entry else "", same)
         self._load(self.ed_sentence, entry.sentence if entry else "", same)
+        self._load(self.ed_sentence_es, entry.sentence_es if entry else "", same)
         self._loading = False
-        for editor in (self.ed_word, self.ed_reading, self.ed_meaning, self.ed_sentence):
+        for editor in (self.ed_word, self.ed_reading, self.ed_meaning, self.ed_sentence, self.ed_sentence_es):
             editor.setEnabled(entry is not None)
         self._update_state()
 
@@ -192,6 +237,52 @@ class GlossaryWindow(QWidget):
             self._fill_row(row, entry)
         self._update_state()
         self.changed.emit()
+
+    # --- tarjetas ---
+    def _auto_card_toggled(self, on):
+        if self.settings is not None:
+            self.settings.setValue("glossary_auto_card", bool(on))
+
+    def _auto_card(self, entry_id):
+        """Con «Crear tarjeta al guardar el significado» marcado: la entrada ya está lista y se crea su tarjeta."""
+        if self.make_card is None or not self.chk_auto_card.isChecked() or entry_id is None:
+            return
+        entry = self.glossary.get(entry_id)
+        if entry is None or entry.pending or self._has_card(entry):
+            return
+        if self.make_card(entry) is not None:
+            row = self._row_of(entry_id)
+            if row >= 0:
+                self._fill_row(row, self.glossary.get(entry_id))
+            self.info.setText(f"✓ Tarjeta creada: «{entry.word}».")
+            self.changed.emit()
+
+    def create_card(self):
+        """«Guardar y crear tarjeta»: la de la palabra seleccionada, ahora mismo."""
+        entry = self.glossary.get(self._current_id) if self._current_id is not None else None
+        if entry is None or self.make_card is None:
+            return
+        if entry.pending:
+            self.info.setText("Escribe primero el significado de la palabra.")
+            return
+        if self.make_card(entry) is None:
+            self.info.setText(f"«{entry.word}» ya tiene tarjeta." if self._has_card(entry) else "No se creó la tarjeta.")
+        else:
+            self.info.setText(f"✓ Tarjeta creada: «{entry.word}».")
+            self.changed.emit()
+        row = self._row_of(entry.id)
+        if row >= 0:
+            self._fill_row(row, self.glossary.get(entry.id))
+        self._update_card_button()
+
+    def changeEvent(self, e):
+        if e.type() == QEvent.ActivationChange and not self.isActiveWindow():    # sales de la ventana
+            self._auto_card(self._current_id)
+        super().changeEvent(e)
+
+    def hideEvent(self, e):
+        self._auto_card(self._current_id)
+        super().hideEvent(e)
 
     # --- acciones ---
     def delete_selected(self):

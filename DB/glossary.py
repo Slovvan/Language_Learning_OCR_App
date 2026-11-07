@@ -29,6 +29,7 @@ class GlossaryEntry:
     meaning: str = ""      # un significado por línea; vacío = pendiente
     sentence: str = ""
     created: str = ""
+    sentence_es: str = ""  # traducción de la frase (la pide la app al pulsar la palabra); pasa a la tarjeta
 
     @property
     def pending(self) -> bool:
@@ -36,7 +37,7 @@ class GlossaryEntry:
 
 
 class UserGlossary:
-    _COLUMNS = "id, lang, key, word, reading, meaning, sentence, created"
+    _COLUMNS = "id, lang, key, word, reading, meaning, sentence, created, sentence_es"
 
     def __init__(self, path: Path = DB_PATH):
         self.path = Path(path)
@@ -46,7 +47,10 @@ class UserGlossary:
             "CREATE TABLE IF NOT EXISTS entries ("
             "id INTEGER PRIMARY KEY AUTOINCREMENT, lang TEXT NOT NULL, key TEXT NOT NULL, "
             "word TEXT NOT NULL, reading TEXT NOT NULL DEFAULT '', meaning TEXT NOT NULL DEFAULT '', "
-            "sentence TEXT NOT NULL DEFAULT '', created TEXT NOT NULL, UNIQUE(lang, key))")
+            "sentence TEXT NOT NULL DEFAULT '', created TEXT NOT NULL, "
+            "sentence_es TEXT NOT NULL DEFAULT '', UNIQUE(lang, key))")
+        if "sentence_es" not in [r[1] for r in self._con.execute("PRAGMA table_info(entries)")]:
+            self._con.execute("ALTER TABLE entries ADD COLUMN sentence_es TEXT NOT NULL DEFAULT ''")   # bases anteriores
         self._con.commit()
 
     @staticmethod
@@ -79,18 +83,20 @@ class UserGlossary:
         return self._con.execute(f"SELECT COUNT(*) FROM entries WHERE lang=?{extra}", (lang,)).fetchone()[0]
 
     # --- escritura ---
-    def add_pending(self, lang: str, key: str, word: str, sentence: str = "", reading: str = ""):
+    def add_pending(self, lang: str, key: str, word: str, sentence: str = "", reading: str = "",
+                    sentence_es: str = ""):
         """Marca una palabra sin significado. Devuelve la entrada nueva o None si ya estaba."""
         if self.by_key(lang, key) is not None:
             return None
         cur = self._con.execute(
-            "INSERT INTO entries (lang, key, word, reading, meaning, sentence, created) VALUES (?,?,?,?,?,?,?)",
-            (lang, key, word, reading, "", sentence, f"{datetime.now():%Y-%m-%d %H:%M:%S}"))
+            "INSERT INTO entries (lang, key, word, reading, meaning, sentence, created, sentence_es) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (lang, key, word, reading, "", sentence, f"{datetime.now():%Y-%m-%d %H:%M:%S}", sentence_es))
         self._con.commit()
         return self.get(cur.lastrowid)
 
     def update(self, entry_id: int, **fields):
-        allowed = {"word", "reading", "meaning", "sentence"}
+        allowed = {"word", "reading", "meaning", "sentence", "sentence_es"}
         fields = {k: v for k, v in fields.items() if k in allowed}
         if fields:
             sets = ", ".join(f"{k}=?" for k in fields)

@@ -95,10 +95,20 @@ def sample_colors(crop: np.ndarray, box) -> tuple:
     return (QColor(int(bg[2]), int(bg[1]), int(bg[0])), QColor(int(fg[2]), int(fg[1]), int(fg[0])))
 
 
-def fit_font(text: str, rect: QRectF, base: QFont) -> QFont:
-    """Fuente cuyo texto cabe en el cuadro: tan alta como el cuadro y sin pasarse de ancho."""
+def _clean_font(base: QFont) -> QFont:
+    """Copia de `base` para dibujar sobre el juego: sin «hinting» (el hinting reparte los píxeles de cada letra y,
+    en tamaños pequeños con letras latinas, las separa de más) y con kerning."""
     font = QFont(base)
     font.setStyleStrategy(QFont.PreferAntialias)
+    font.setHintingPreference(QFont.PreferNoHinting)
+    font.setKerning(True)
+    font.setLetterSpacing(QFont.PercentageSpacing, 100)
+    return font
+
+
+def fit_font(text: str, rect: QRectF, base: QFont) -> QFont:
+    """Fuente cuyo texto cabe en el cuadro: tan alta como el cuadro y sin pasarse de ancho."""
+    font = _clean_font(base)
     size = max(8, int(rect.height() * 0.78))
     while True:
         font.setPixelSize(size)
@@ -115,8 +125,7 @@ def uniform_font(items: list, base: QFont) -> QFont:
         return fit_font("", QRectF(0, 0, 100, 12), base)
     median = sizes[len(sizes) // 2]
     size = max(sizes[0], int(median * 0.75), 8)
-    font = QFont(base)
-    font.setStyleStrategy(QFont.PreferAntialias)
+    font = _clean_font(base)
     font.setPixelSize(size)
     return font
 
@@ -126,7 +135,7 @@ class CaptureOverlay(QWidget):
     word_hovered = pyqtSignal(str, str, QPoint)    # palabra, compuesto, posición global
     word_context = pyqtSignal(str, int)            # justo antes: línea de texto y posición de la palabra en ella
     hover_ended = pyqtSignal()
-    word_anchor = pyqtSignal(QRect, bool)          # justo antes: rect global de la palabra y si el popup va arriba
+    word_anchor = pyqtSignal(QRect, bool, bool)    # justo antes: rect global de la palabra, si el popup va arriba y si va al costado (texto vertical)
     wheel_moved = pyqtSignal(int)                  # rueda del mouse: desplaza la ventanita del diccionario
     word_clicked = pyqtSignal(str, str, int)       # palabra, compuesto, posición en `self.text`
     merge_toggled = pyqtSignal()                   # tecla M
@@ -303,8 +312,7 @@ class CaptureOverlay(QWidget):
     def _add_vertical(self, text, rect, bg, fg, base, offset):
         """Columna de texto vertical: cada carácter en su celda, de arriba abajo, en el sitio original."""
         cell = max(8.0, min(rect.width(), rect.height() / max(1, len(text))))
-        font = QFont(base)
-        font.setStyleStrategy(QFont.PreferAntialias)
+        font = _clean_font(base)
         font.setPixelSize(max(8, int(cell * 0.82)))
         height = cell * len(text)
         box = QRectF(rect.center().x() - cell / 2, rect.top(), cell, max(height, rect.height()))
@@ -454,7 +462,8 @@ class CaptureOverlay(QWidget):
             p = line.patch
             r = (QRectF(p.left(), w.x0, p.width(), w.x1 - w.x0) if line.vertical
                  else QRectF(w.x0, p.top(), w.x1 - w.x0, p.height())).toAlignedRect()
-            self._hover_anchor = (QRect(self.mapToGlobal(r.topLeft()), r.size()), p.center().y() > self.height() / 2)
+            self._hover_anchor = (QRect(self.mapToGlobal(r.topLeft()), r.size()), p.center().y() > self.height() / 2,
+                                  bool(line.vertical))
             self._hover_timer.start()
         self.setCursor(Qt.PointingHandCursor if hit else Qt.ArrowCursor)
         self.update()

@@ -21,6 +21,7 @@ HIDE_AFTER_LEAVE_MS = 250    # ...y al salir el mouse de la propia ventanita
 class WordService(QObject):
     saved_changed = pyqtSignal()                  # se guardó o borró una tarjeta: refrescar marcas
     card_requested = pyqtSignal(int, str, str)    # id de tarjeta, frase, palabra a traducir ("" = ninguna)
+    glossary_requested = pyqtSignal(int, str)     # id de la entrada de Pendientes y su frase, para traducirla
     message = pyqtSignal(str)                     # aviso corto para mostrar al usuario
 
     def __init__(self, dictionary, store, popup, parent=None, glossary=None):
@@ -82,16 +83,53 @@ class WordService(QObject):
         result = self.dictionary.lookup(word, compound)
         if result is None and self.glossary is not None and self.dictionary.available:
             # Sin significado: va a la lista de pendientes para rellenarla (no se crea tarjeta vacía).
-            if self.glossary.add_pending(self.store.lang, key, word, sentence) is None:
+            entry = self.glossary.add_pending(self.store.lang, key, word, sentence)
+            if entry is None:
                 self.message.emit(f"«{key}» ya está en Pendientes.")
             else:
                 self.message.emit(f"«{key}» no tiene significado: añadida a Pendientes "
                                   f"({self.glossary.count(self.store.lang, True)}).")
+                if sentence:                          # la traducción de la frase se guarda desde ya, para la tarjeta
+                    self.glossary_requested.emit(entry.id, sentence)
             self.saved_changed.emit()
             return None
         card = self.store.add(build_card(word, key, result, sentence, self.store.lang))
         # Sin entrada en el diccionario (p. ej. «mana»): se pide también la traducción de la palabra.
         self.card_requested.emit(card.id, sentence, "" if result is not None else word)
+        self.message.emit(f"✓ «{card.word}» guardada ({len(self.store)} en la lista).")
+        self.saved_changed.emit()
+        return card
+
+    def glossary_translated(self, entry_id: int, sentence_es: str) -> bool:
+        """Llega la traducción de la frase de una palabra pendiente. ¿Cambió la entrada?"""
+        entry = self.glossary.get(entry_id) if self.glossary is not None else None
+        if entry is None or not sentence_es or entry.sentence_es:
+            return False
+        self.glossary.update(entry_id, sentence_es=sentence_es)
+        return True
+
+    def has_card_for(self, entry) -> bool:
+        """¿La palabra de esta entrada del glosario ya tiene tarjeta (en el idioma activo)?"""
+        return entry.lang == self.store.lang and self.store.has(entry.key)
+
+    def card_from_entry(self, entry):
+        """Tarjeta de una palabra del glosario (con tu significado, su frase y la traducción de la frase).
+
+        Devuelve la tarjeta nueva, o None si la entrada sigue pendiente, es de otro idioma o ya tiene tarjeta.
+        """
+        if entry is None or entry.pending or entry.lang != self.store.lang:
+            return None
+        if self.store.has(entry.key):
+            self.message.emit(f"«{entry.key}» ya tiene tarjeta.")
+            return None
+        result = self.glossary.lookup(entry.lang, entry.word, "", entry.key)
+        card = build_card(entry.word, entry.key, result, entry.sentence.strip(), self.store.lang)
+        card.sentence_es = entry.sentence_es.strip()
+        card = self.store.add(card)
+        if card is None:
+            return None
+        if card.sentence and not card.sentence_es:        # sin traducción guardada: se pide ahora
+            self.card_requested.emit(card.id, card.sentence, "")
         self.message.emit(f"✓ «{card.word}» guardada ({len(self.store)} en la lista).")
         self.saved_changed.emit()
         return card
