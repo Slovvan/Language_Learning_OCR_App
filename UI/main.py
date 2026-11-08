@@ -16,6 +16,7 @@ from DB.dictionary import Dictionary
 from DB.dictionary_ja import JaDictionary
 from DB.dictionary_fr import FrDictionary
 from DB.ja_nlp import tokenizer as ja_tokenizer
+from DB.db_safe import open_safe
 from DB.phrase_log import PhraseLog
 from DB.glossary import GlossaryDictionary, UserGlossary
 from UI.glossary_window import GlossaryWindow
@@ -35,6 +36,10 @@ from UI.live_mode import LiveMode
 from UI.live_options import LiveOptions
 from UI.settings_window import SettingsDialog
 from Cards.cards import CardStore
+
+import Cards.cards as _cards_mod
+import DB.glossary as _glossary_mod
+import DB.phrase_log as _log_mod
 
 import Translator.japanese as japanese
 import Translator.languages as languages
@@ -103,9 +108,10 @@ class MainWindow(QWidget):
         self.dictionary = Dictionary()
         self.dictionary_ja = JaDictionary()
         self.dictionary_fr = FrDictionary()
-        self.store = CardStore(lang=lang)       # cada idioma tiene su lista de palabras...
-        self.log = PhraseLog(lang=lang)         # ...y su registro de frases
-        self.glossary = UserGlossary()          # palabras sin significado (pendientes) y las que rellenas tú
+        self._startup_notes = []                # avisos de arranque (p. ej. una base de datos dañada que se apartó)
+        self.store = open_safe(lambda: CardStore(lang=lang), _cards_mod.DB_PATH, self._startup_notes)   # cada idioma tiene su lista de palabras...
+        self.log = open_safe(lambda: PhraseLog(lang=lang), _log_mod.DB_PATH, self._startup_notes)  # ...y su registro de frases
+        self.glossary = open_safe(UserGlossary, _glossary_mod.DB_PATH, self._startup_notes)               # palabras sin significado y las que rellenas tú
         self._dicts = {"en": GlossaryDictionary(self.dictionary, self.glossary, "en"),
                        "ja": GlossaryDictionary(self.dictionary_ja, self.glossary, "ja"),
                        "fr": GlossaryDictionary(self.dictionary_fr, self.glossary, "fr")}
@@ -724,6 +730,9 @@ class MainWindow(QWidget):
     # --- resultados del worker ---
     def on_ready(self):
         self.status.setText(f"Listo. Pulsa el botón o {hotkey_label(self.settings, 'capture')}.")
+        if self._startup_notes:                          # p. ej. una base de datos dañada que se apartó al arrancar
+            self.status.setText(" ".join(self._startup_notes) + "  " + self.status.text())
+            self._startup_notes = []
         self.btn_capture.setEnabled(True)
 
     def on_result(self, res):

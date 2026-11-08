@@ -12,10 +12,3 @@ Principal:
 EN - ES (hecho)
 JP - EN (hecho)
 FR - ES (hecho)
-
-
-Cuando se edita la región, teniendo el leer y congelado automatico, se rompe. entonces cuando el texto cambia, se sigue manteniendo texto congelado encima(cuando se edita y se termina de editar solo está invisible). 
-Presionando leer si toma el nuevo texto, pero se mantiene congelado en la pantalla, obligando a presionarlo por cada frase.
-pero el leer y congelar automatico no funciona, supongo porque ve el mismo texto encima congelado?
-
-Cerrando la región y volviendo a ponerla no soluciona el error, hasta cerrar la app por completo

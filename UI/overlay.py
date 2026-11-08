@@ -260,6 +260,8 @@ class CaptureOverlay(QWidget):
     # ------------------------------------------------------------------ resultados
     def set_result(self, res):
         """Dibuja el texto reconocido encima del original. `res` es un ocr_engine.OcrResult."""
+        if self._region is None or self._crop is None:      # aún no hay región elegida (p. ej. llegó una lectura en vivo mientras se elige otra)
+            return
         self._end_hover()
         self._lines, texts = [], []
         self._vertical = bool(getattr(res, "vertical", False))
@@ -321,6 +323,8 @@ class CaptureOverlay(QWidget):
         self._lines.append(_Line(text, offset, box, patch, bg, fg, font, words, True, cell))
 
     def set_translation(self, text: str):
+        if self._region is None:
+            return
         self._translation = text
         self._busy = False
         self._rebuild_panel()
@@ -328,6 +332,8 @@ class CaptureOverlay(QWidget):
 
     def set_message(self, text: str):
         """Un error u otro aviso que se muestra en el panel en lugar de la traducción."""
+        if self._region is None:
+            return
         self._message = text
         self._busy = False
         self._rebuild_panel()

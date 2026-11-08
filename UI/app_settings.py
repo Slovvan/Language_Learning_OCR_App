@@ -30,7 +30,7 @@ def get_number(settings, key: str) -> int:
     default, lo, hi = NUMBERS[key]
     try:
         value = int(float(settings.value(key, default)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):      # «abc», «nan», «inf»...
         value = default
     return max(lo, min(hi, value))
 

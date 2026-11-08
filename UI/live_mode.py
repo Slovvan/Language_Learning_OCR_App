@@ -1066,6 +1066,7 @@ class LiveMode(QObject):
         self.layer.set_frozen(None)               # nada de una sesión anterior se queda pegado
         self.freezer.clear()
         self._freeze_paused = False
+        self._pause_game(False)                   # si la pantalla seguía congelada con el juego en pausa, se reanuda
         self.panel.btn_freeze.setText("Congelar (F)")
         self.layer.set_editing(False)
         self.editing = False
@@ -1100,6 +1101,7 @@ class LiveMode(QObject):
         was = self.active
         self.layer.set_editing(False)
         self.editing = False
+        self._hidden_for_select = False
         self._ghost(False)
         self._set_frozen(None)
         self.controller.stop()
@@ -1304,7 +1306,11 @@ class LiveMode(QObject):
 
     def toggle_freeze(self):
         """«F» / Ctrl+Alt+F: congela la pantalla entera con la última lectura, o la descongela."""
-        if not self.active or self._reading:
+        if not self.active or self._reading or self._hidden_for_select:
+            return
+        if self.editing and not self.inflight:
+            self.set_editing(False)                  # «Congelar» termina la edición de la región
+        if self.editing:
             return
         if self.layer.frozen or self.freezer.isVisible():
             self._unfreeze_checked()
@@ -1321,7 +1327,7 @@ class LiveMode(QObject):
                 full = self._grab_full()
                 self._reading = False
                 self._ghost(False)
-                if self.active and self.layer.has_text:
+                if self.active and self.layer.has_text and not self.editing and not self._hidden_for_select:
                     self._set_frozen(self._image, full)
             QTimer.singleShot(READ_DELAY_MS, grab)
 
@@ -1407,7 +1413,7 @@ class LiveMode(QObject):
 
     def toggle_merge(self):
         """«M» / Ctrl+Alt+M: une o separa las líneas partidas y vuelve a procesar la última lectura."""
-        if not self.active or self._reading or self.inflight or self._image is None:
+        if not self.active or self._reading or self.inflight or self._image is None or self.editing or self._hidden_for_select:
             return
         win = self.win
         win.chk_merge.setChecked(not win.chk_merge.isChecked())
@@ -1440,7 +1446,7 @@ class LiveMode(QObject):
             self.set_editing(not self.editing)
 
     def set_editing(self, on: bool):
-        if not self.active or on == self.editing or self._reading or self.inflight:
+        if not self.active or on == self.editing or self._reading or self.inflight or (on and self._hidden_for_select):
             return
         self.editing = on
         self.win.words.hide_popup()
@@ -1505,7 +1511,7 @@ class LiveMode(QObject):
 
     # ------------------------------------------------------------------ lectura
     def read_now(self, freeze=False):
-        if not self.active or self._reading or self.inflight:
+        if not self.active or self._reading or self.inflight or self._hidden_for_select:
             return
         self._force_freeze = bool(freeze)
         if self.editing:
@@ -1671,6 +1677,7 @@ class LiveMode(QObject):
         self._reveal_panel()
         self.layer.set_result(res, self._image, self.rect)
         want = self.freeze_auto if self.kind == "auto" else (self.freeze_read or self._force_freeze)
+        want = want and not (self.editing or self._hidden_for_select)      # llegó mientras se editaba o se elegía región: no se congela
         full, self._full = self._full, None
         self._set_frozen(self._image if want else None, full)
         self.layer.set_stale(False)
