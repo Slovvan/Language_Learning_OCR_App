@@ -4,7 +4,3 @@ DB/data/
 __pycache__
 Tests
 ocr_jp_out
-
-profiles.py 
-settings.py 
-settings_window.py

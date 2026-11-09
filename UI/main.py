@@ -8,8 +8,8 @@ import sys
 
 from PyQt5.QtCore import QObject, QRect, QSettings, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QGuiApplication, QIcon, QPainter, QPixmap
-from PyQt5.QtWidgets import (QApplication, QCheckBox, QComboBox, QHBoxLayout, QLabel,
-                             QPushButton, QTextEdit, QVBoxLayout, QWidget)
+from PyQt5.QtWidgets import (QApplication, QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel,
+                             QPushButton, QStackedWidget, QTextEdit, QVBoxLayout, QWidget)
 
 import UI.profiles as profiles
 from DB.dictionary import Dictionary
@@ -20,14 +20,14 @@ from DB.db_safe import open_safe
 from DB.phrase_log import PhraseLog
 from DB.glossary import GlossaryDictionary, UserGlossary
 from UI.glossary_window import GlossaryWindow
-from UI.log_view import LogWindow
+from UI.main_ui import NavButton, StatusLabel, build_qss, set_prop
+from UI.log_view import LogPage
 from UI.overlay import SELECT, CaptureOverlay
 from UI.word_popup import HoverTextEdit, WordPopup
 from UI.word_service import WordService
 from UI.ocr_worker import OcrWorker
 from UI.capture import bgr_to_qpixmap, grab_screen
-from UI.cards_window import CardsWindow
-from UI.settings_window import SettingsDialog
+from UI.cards_window import CardsPage
 from UI.hotkeys import HotkeyManager, global_label
 from UI.live_mode import LiveMode
 from UI.app_settings import get_ocr_bar, hotkey_label, load_bindings, load_keys, get_number
@@ -80,9 +80,10 @@ class MainWindow(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("OCR para juegos - Fase 5 (pantalla congelada)")
+        self.setWindowTitle("OCR Translator")
         self.setWindowIcon(make_icon())
-        self.resize(560, 700)
+        self.resize(960, 680)
+        self.setMinimumSize(840, 560)
         self.overlay = None
         self.cards_window = None
         self.glossary_window = None
@@ -133,18 +134,25 @@ class MainWindow(QWidget):
         self.btn_live_read = QPushButton("Leer región")
         self.btn_live_text = QPushButton("Texto (O)")
         self.btn_live_panel = QPushButton("Panel (T)")
-        self.profile_label = QLabel("Perfil:")
+        self.profile_label = QLabel("Perfil activo")
         self.combo_profile = QComboBox()                  # perfiles por juego (modo en vivo)
         self.combo_profile.setToolTip("Perfil del juego: región fija, idioma, modo de OCR y opciones del modo en vivo.")
         self.btn_profile_save = QPushButton("Guardar…")
         self.btn_profile_save.setToolTip("Guarda la región, el idioma, el modo de OCR y las opciones actuales como perfil de este juego.")
         self.btn_live_edit = QPushButton("Región (E)")
         self.btn_live_stop = QPushButton("Detener")
-        self.btn_cards = QPushButton()
-        self.btn_log = QPushButton()
-        self.btn_glossary = QPushButton()
-        self.btn_copy_src = QPushButton("Copiar original")
-        self.btn_copy_dst = QPushButton("Copiar traducción")
+        self.btn_nav_capture = NavButton("◉", "Captura")
+        self.btn_nav_capture.set_current(True)
+        self.btn_cards = NavButton("▤", "Tarjetas")          # por ahora abren sus ventanas (se vuelven páginas en las etapas siguientes)
+        self.btn_log = NavButton("☰", "Registro")
+        self.btn_glossary = NavButton("✎", "Glosario")
+        self.btn_settings = NavButton("⚙", "Configuración")
+        self.btn_seg_frozen = QPushButton("Congelar")        # el selector «Al capturar» (combo_capture guarda el valor)
+        self.btn_seg_live = QPushButton("En vivo")
+        self.btn_copy_src = QPushButton("Copiar")
+        self.btn_copy_dst = QPushButton("Copiar")
+        self.btn_copy_src.setToolTip("Copia el texto original")
+        self.btn_copy_dst.setToolTip("Copia la traducción")
         self.combo_lang = QComboBox()
         for code, pack in languages.PACKS.items():
             self.combo_lang.addItem(pack.label, code)
@@ -162,74 +170,144 @@ class MainWindow(QWidget):
             "Actívalo para cuadros de diálogo donde una frase ocupa varias líneas.\n"
             "Desactívalo para menús o listas donde cada línea es independiente.\n"
             "Con la captura abierta puedes cambiarlo con la tecla M.")
-        self.status = QLabel("Iniciando...")
-        self.status.setWordWrap(True)
+        self.status = StatusLabel("Iniciando...")
+        self.status.setObjectName("status")
         self.how_to = QLabel(
             "Tras elegir la región, la pantalla queda congelada con el texto encima. "
             "Esc la cierra. Esta ventana se minimiza al capturar y no vuelve a aparecer sola: "
             "cámbiate a ella desde la barra de tareas cuando quieras ver el registro.")
         self.how_to.setWordWrap(True)
-        self.how_to.setStyleSheet("color: gray;")
+        self.how_to.setObjectName("muted")
         self.dict_note = QLabel(
             "⚠ Diccionario no encontrado: ejecuta build_dictionary.py para ver "
             "significados al pasar el mouse sobre una palabra.")
         self.dict_note.setWordWrap(True)
+        self.dict_note.setObjectName("warn")
         self.dict_note.setVisible(not self.dictionary.available)
         self.preview = QLabel("(aquí aparece la región capturada)")
         self.preview.setAlignment(Qt.AlignCenter)
-        self.preview.setMinimumHeight(110)
-        self.preview.setStyleSheet("border: 1px dashed gray;")
+        self.preview.setMinimumHeight(70)
+        self.preview.setObjectName("preview")
+        self.preview.setVisible(False)
         self.output = HoverTextEdit()
         self.output.setPlaceholderText("Texto original (OCR) de la última captura...")
         self.translation = QTextEdit()
         self.translation.setPlaceholderText("Traducción al español...")
 
-        modes = QHBoxLayout()
-        modes.addWidget(QLabel("Al capturar:"))
-        modes.addWidget(self.combo_capture, 1)
-        live_row = QHBoxLayout()
-        for b in (self.btn_live_read, self.btn_live_text, self.btn_live_panel, self.btn_live_edit, self.btn_live_stop):
-            live_row.addWidget(b)
-        profile_row = QHBoxLayout()
-        profile_row.addWidget(self.profile_label)
-        profile_row.addWidget(self.combo_profile, 1)
-        profile_row.addWidget(self.btn_profile_save)
-        buttons = QHBoxLayout()
-        buttons.addWidget(self.btn_capture)
-        buttons2 = QHBoxLayout()
-        buttons2.addWidget(self.btn_cards)
-        buttons2.addWidget(self.btn_log)
-        buttons2.addWidget(self.btn_glossary)
-        self.btn_settings = QPushButton("Configuración…")
-        buttons4 = QHBoxLayout()
-        buttons4.addWidget(self.btn_settings)
-        buttons3 = QHBoxLayout()
-        buttons3.addWidget(self.btn_copy_src)
-        buttons3.addWidget(self.btn_copy_dst)
-        layout = QVBoxLayout(self)
-        langs = QHBoxLayout()
-        langs.addWidget(QLabel("Idioma del juego:"))
-        langs.addWidget(self.combo_lang, 1)
-        langs.addWidget(self.combo_mode, 1)
-        layout.addLayout(langs)
-        layout.addLayout(modes)
-        layout.addLayout(live_row)
-        layout.addLayout(profile_row)
-        layout.addLayout(buttons)
-        layout.addLayout(buttons2)
-        layout.addLayout(buttons3)
-        layout.addLayout(buttons4)
-        layout.addWidget(self.chk_merge)
-        layout.addWidget(self.status)
-        layout.addWidget(self.how_to)
-        layout.addWidget(self.dict_note)
-        layout.addWidget(self.preview)
         self.lbl_original = QLabel()
         self.lbl_translation = QLabel()
-        layout.addWidget(self.lbl_original)
-        layout.addWidget(self.output, 1)
-        layout.addWidget(self.lbl_translation)
-        layout.addWidget(self.translation, 1)
+        self.lbl_original.setObjectName("sect")
+        self.lbl_translation.setObjectName("sect")
+        self.lbl_hint = QLabel("Mouse sobre una palabra: significado · clic: guardarla")
+        self.lbl_hint.setObjectName("muted")
+        for b_ in (self.btn_live_read, self.btn_capture):
+            b_.setProperty("variant", "primary")
+            b_.setMinimumHeight(46)                      # las dos filas de botones grandes miden lo mismo (primario y secundario)
+        for b_ in (self.btn_live_text, self.btn_live_panel, self.btn_live_edit, self.btn_live_stop):
+            b_.setMinimumHeight(36)
+        for b_ in (self.btn_copy_src, self.btn_copy_dst):
+            b_.setObjectName("ghost")
+            b_.setCursor(Qt.PointingHandCursor)
+        self.btn_live_stop.setProperty("variant", "danger")
+        for b_ in (self.btn_seg_frozen, self.btn_seg_live):
+            b_.setObjectName("segbtn")
+            b_.setFocusPolicy(Qt.NoFocus)
+            b_.setProperty("on", "false")
+
+        # --- ventana: barra lateral a la izquierda, captura al centro ---
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.shell = QWidget()                      # la hoja de estilo vive aquí: las otras ventanas no la heredan
+        self.shell.setObjectName("shell")
+        self.shell.setStyleSheet(build_qss())
+        outer.addWidget(self.shell)
+        self.combo_capture.setParent(self.shell)    # guarda el modo (congelar / en vivo); los botones de arriba lo manejan
+        self.combo_capture.hide()
+        root = QHBoxLayout(self.shell)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        side = QFrame()
+        side.setObjectName("side")
+        side.setFixedWidth(220)
+        sl = QVBoxLayout(side)
+        sl.setContentsMargins(14, 18, 14, 14)
+        sl.setSpacing(4)
+        brand = QLabel("OCR Translator")
+        brand.setObjectName("brand")
+        sl.addWidget(brand)
+        sl.addSpacing(12)
+        for b_ in (self.btn_nav_capture, self.btn_cards, self.btn_log, self.btn_glossary, self.btn_settings):
+            sl.addWidget(b_)
+        sl.addStretch(1)
+        self.profile_label.setObjectName("muted")
+        sl.addWidget(self.profile_label)
+        sl.addWidget(self.combo_profile)
+        sl.addWidget(self.btn_profile_save)
+        sl.addSpacing(8)
+        sl.addWidget(self.status)
+        root.addWidget(side)
+
+        content = QWidget()
+        cl = QVBoxLayout(content)
+        cl.setContentsMargins(18, 16, 18, 14)
+        cl.setSpacing(10)
+        cl.addWidget(self.dict_note)
+        seg = QFrame()
+        seg.setObjectName("seg")
+        seg_l = QHBoxLayout(seg)
+        seg_l.setContentsMargins(4, 4, 4, 4)
+        seg_l.setSpacing(4)
+        seg_l.addWidget(self.btn_seg_frozen)
+        seg_l.addWidget(self.btn_seg_live)
+        row_a = QHBoxLayout()
+        row_a.setSpacing(8)
+        row_a.addWidget(self.combo_lang, 1)
+        row_a.addWidget(self.combo_mode, 1)
+        row_a.addWidget(seg)
+        cl.addLayout(row_a)
+        row_b = QHBoxLayout()
+        row_b.setSpacing(8)
+        row_b.addWidget(self.btn_capture, 1)
+        row_b.addWidget(self.btn_live_read, 1)
+        cl.addLayout(row_b)
+        row_c = QHBoxLayout()
+        row_c.setSpacing(8)
+        for b_ in (self.btn_live_text, self.btn_live_panel, self.btn_live_edit, self.btn_live_stop):
+            row_c.addWidget(b_, 1)
+        cl.addLayout(row_c)
+        cl.addWidget(self.preview)
+
+        def card(title, edit, copy_btn):
+            """Las dos tarjetas son idénticas por dentro (cabecera de la misma altura y campo debajo): así los campos quedan alineados."""
+            frame = QFrame()
+            frame.setObjectName("card")
+            lay = QVBoxLayout(frame)
+            lay.setContentsMargins(14, 10, 14, 14)
+            lay.setSpacing(8)
+            head = QHBoxLayout()
+            head.setSpacing(8)
+            head.addWidget(title, 1)
+            head.addWidget(copy_btn)
+            copy_btn.setFixedHeight(26)
+            lay.addLayout(head)
+            lay.addWidget(edit, 1)
+            return frame
+        cards = QHBoxLayout()
+        cards.setSpacing(12)
+        cards.addWidget(card(self.lbl_original, self.output, self.btn_copy_src), 1)
+        cards.addWidget(card(self.lbl_translation, self.translation, self.btn_copy_dst), 1)
+        cl.addLayout(cards, 1)
+        foot = QHBoxLayout()                          # casilla a la izquierda y la ayuda del mouse a la derecha
+        foot.addWidget(self.chk_merge)
+        foot.addStretch(1)
+        self.lbl_hint.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        foot.addWidget(self.lbl_hint)
+        cl.addLayout(foot)
+        cl.addWidget(self.how_to)
+        self.stack = QStackedWidget()                 # páginas: 0 = Captura; Tarjetas se añade al abrirla
+        self.stack.addWidget(content)
+        root.addWidget(self.stack, 1)
 
         # --- hilo del OCR + traductor (los modelos se cargan una vez, dentro del hilo) ---
         self.thread = QThread()
@@ -262,10 +340,13 @@ class MainWindow(QWidget):
         self.btn_live_panel.clicked.connect(lambda: self.live.toggle_panel())
         self.btn_live_edit.clicked.connect(lambda: self.live.toggle_edit())
         self.btn_live_stop.clicked.connect(lambda: self.live.stop())
+        self.btn_seg_frozen.clicked.connect(lambda: self._set_capture_mode("frozen"))
+        self.btn_seg_live.clicked.connect(lambda: self._set_capture_mode("live"))
         self.btn_settings.clicked.connect(lambda: self.open_settings())
         self.btn_profile_save.clicked.connect(self.save_profile_dialog)
         self._profile_loading = False
         self.btn_cards.clicked.connect(self.open_cards)
+        self.btn_nav_capture.clicked.connect(self.show_capture_page)
         self.btn_log.clicked.connect(self.open_log)
         self.btn_glossary.clicked.connect(self.open_glossary)
         self.btn_copy_src.clicked.connect(lambda: self.copy(self.output))
@@ -290,6 +371,7 @@ class MainWindow(QWidget):
         self._sync_mode_bars()
         self._apply_hotkey_labels()
         self.live.active_changed.connect(lambda _a: self._update_capture_ui())
+        self.live.view_changed.connect(self._sync_live_toggles)
         self.live.message.connect(self.status.setText)
         self.live.select_requested.connect(self.start_capture)
         saved = str(self.settings.value("capture_mode", "frozen"))
@@ -308,9 +390,8 @@ class MainWindow(QWidget):
     def _apply_language_ui(self):
         pack = languages.active()
         self.words.dictionary = self._dictionary_for(pack.code)
-        self.lbl_original.setText(
-            f"Original ({pack.source_name}) — mouse sobre una palabra: significado · clic: guardarla")
-        self.lbl_translation.setText(f"Traducción ({pack.target_name})")
+        self.lbl_original.setText(f"ORIGINAL · {pack.source_name}")
+        self.lbl_translation.setText(f"TRADUCCIÓN · {pack.target_name}")
         self.translation.setPlaceholderText(f"Traducción al {pack.target_name}...")
         self.combo_mode.setVisible(pack.has_ocr_modes)
         if hasattr(self, "live"):
@@ -406,11 +487,16 @@ class MainWindow(QWidget):
             self.log_window.refresh_marks()
 
     def _update_buttons(self):
+        """Contadores de la barra lateral (y su descripción completa, con el idioma, al pasar el mouse)."""
         name = languages.active().source_name
-        self.btn_cards.setText(f"Palabras guardadas — {name} ({len(self.store)})")
-        self.btn_log.setText(f"Registro de frases — {name} ({len(self.log)})")
         lang = languages.active().code
-        self.btn_glossary.setText(f"Pendientes — {name} ({self.glossary.count(lang, True)})")
+        cards, log, pending = len(self.store), len(self.log), self.glossary.count(lang, True)
+        self.btn_cards.set_badge(str(cards) if cards else "")
+        self.btn_cards.setToolTip(f"Palabras guardadas — {name} ({cards})")
+        self.btn_log.set_badge(str(log) if log else "")
+        self.btn_log.setToolTip(f"Registro de frases — {name} ({log})")
+        self.btn_glossary.set_badge(str(pending) if pending else "", warn=True)
+        self.btn_glossary.setToolTip(f"Pendientes — {name} ({pending})")
 
     def on_word_clicked(self, word, compound, start):
         self.words.click(word, compound, self.output.toPlainText(), start, self._merge_used)
@@ -441,13 +527,21 @@ class MainWindow(QWidget):
             self.cards_window.reload()
 
     def open_cards(self):
+        """Muestra la página «Tarjetas» dentro de la ventana principal."""
         if self.cards_window is None:
-            self.cards_window = CardsWindow(self.store, self)
+            self.cards_window = CardsPage(self.store, self)
             self.cards_window.changed.connect(self._cards_changed)
+            self.stack.addWidget(self.cards_window)
         self.cards_window.reload()
-        self.cards_window.show()
-        self.cards_window.raise_()
-        self.cards_window.activateWindow()
+        self._show_page(self.cards_window, self.btn_cards)
+
+    def show_capture_page(self):
+        self._show_page(self.stack.widget(0), self.btn_nav_capture)
+
+    def _show_page(self, page, nav_button):
+        self.stack.setCurrentWidget(page)
+        for b in (self.btn_nav_capture, self.btn_cards, self.btn_log):
+            b.set_current(b is nav_button)
 
     def open_glossary(self):
         lang = languages.active().code
@@ -462,19 +556,20 @@ class MainWindow(QWidget):
         self.glossary_window.activateWindow()
 
     def open_log(self):
+        """Muestra la página «Registro» dentro de la ventana principal."""
         if self.log_window is None:
-            self.log_window = LogWindow(self.log, self.words, self)
+            self.log_window = LogPage(self.log, self.words, self)
+            self.log_window.changed.connect(self._update_buttons)
+            self.stack.addWidget(self.log_window)
         self.log_window.reload()
-        self.log_window.show()
-        self.log_window.raise_()
-        self.log_window.activateWindow()
+        self._show_page(self.log_window, self.btn_log)
 
     # --- flujo de captura ---
     def _minimize_windows(self) -> bool:
         """Minimiza las ventanas de la app para que no salgan en la captura (siguen en la barra
         de tareas y no se vuelven a abrir solas). ¿Alguna estaba a la vista?"""
         shown = False
-        for w in (self, self.cards_window, self.log_window, self.glossary_window):
+        for w in (self, self.glossary_window):
             if w is not None and w.isVisible() and not w.isMinimized():
                 shown = True
                 w.showMinimized()
@@ -483,6 +578,17 @@ class MainWindow(QWidget):
     # --- modo en vivo ---
     def _live_selected(self) -> bool:
         return self.combo_capture.currentData() == "live"
+
+    def _set_capture_mode(self, data: str):
+        """Los botones «Congelar» / «En vivo» de arriba cambian el modo (si el vivo no está en marcha)."""
+        if self.combo_capture.isEnabled():
+            self.combo_capture.setCurrentIndex(max(0, self.combo_capture.findData(data)))
+
+    def _sync_live_toggles(self):
+        """«Texto (O)» y «Panel (T)» se ven encendidos mientras el texto / el panel están a la vista."""
+        on = self.live.active
+        set_prop(self.btn_live_text, "on", on and self.live.text_visible)
+        set_prop(self.btn_live_panel, "on", on and self.live.panel_visible)
 
     def on_capture_mode_changed(self):
         if self.live.active:                                   # con el vivo en marcha no se cambia de modo
@@ -616,9 +722,20 @@ class MainWindow(QWidget):
     def _update_capture_ui(self):
         live = self._live_selected()
         self.combo_capture.setEnabled(not self.live.active)
-        self.combo_capture.setToolTip("Detén el modo en vivo para cambiar de modo." if self.live.active
-                                      else "Congelar: eliges una región en cada captura.\n"
-                                           "En vivo: eliges la región una vez y la lees cuando quieras.")
+        tip = ("Detén el modo en vivo para cambiar de modo." if self.live.active
+               else "Congelar: eliges una región en cada captura.\n"
+                    "En vivo: eliges la región una vez y la lees cuando quieras.")
+        self.combo_capture.setToolTip(tip)
+        for b in (self.btn_seg_frozen, self.btn_seg_live):
+            b.setEnabled(not self.live.active)
+            b.setToolTip(tip)
+        set_prop(self.btn_seg_live, "on", live)
+        set_prop(self.btn_seg_frozen, "on", not live)
+        set_prop(self.btn_capture, "variant", "primary" if not (live and self.live.active) else "")
+        self.btn_live_read.setVisible(live)
+        has_preview = self.preview.pixmap() is not None and not self.preview.pixmap().isNull()
+        self.preview.setVisible(not live and has_preview)
+        self._sync_live_toggles()
         self.btn_capture.setText(f"{'Elegir región fija' if live else 'Capturar región'} ({hotkey_label(self.settings, 'capture')})")
         self.combo_profile.setVisible(live)
         self.btn_profile_save.setVisible(live)
@@ -661,14 +778,19 @@ class MainWindow(QWidget):
 
     def request_live(self, image):
         """Lectura pedida por el modo en vivo."""
-        pix = bgr_to_qpixmap(image)
-        self.preview.setPixmap(pix.scaledToWidth(min(pix.width(), 480), Qt.SmoothTransformation))
+        self._show_preview(image)
         self._request(image)
+
+    def _show_preview(self, image):
+        pix = bgr_to_qpixmap(image)
+        self.preview.setPixmap(pix.scaled(480, 110, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.preview.setVisible(not self._live_selected())
 
     def start_capture(self):
         if not self.btn_capture.isEnabled() or self._grabbing:
             return
         self._grabbing = True
+        self.show_capture_page()                         # el resultado se ve en la página de captura
         self.words.hide_popup()
         self.live.hide_for_select()                      # la región y el panel no deben salir en la captura congelada
         was_visible = self._minimize_windows() or self.live.active
@@ -707,8 +829,7 @@ class MainWindow(QWidget):
             self.status.setText(f"Listo. {self._ocr_info}" if self._ocr_info else "Listo.")
 
     def on_region(self, image):
-        pix = bgr_to_qpixmap(image)
-        self.preview.setPixmap(pix.scaledToWidth(min(pix.width(), 480), Qt.SmoothTransformation))
+        self._show_preview(image)
         self._request(image)
 
     def on_merge_toggled(self):
@@ -797,7 +918,7 @@ class MainWindow(QWidget):
         if self.overlay is not None:
             self.overlay.hide()
         self.live.shutdown()
-        for w in (self.cards_window, self.log_window, self.glossary_window):
+        for w in (self.glossary_window,):
             if w is not None:
                 w.close()
         self.hotkey.stop()

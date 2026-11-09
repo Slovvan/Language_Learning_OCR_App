@@ -16,7 +16,7 @@ Lectura automática (opcional, A / Ctrl+Alt+A): se vigila la región y se lee cu
 vuelve con la lectura nueva. Para poder ver el juego por debajo, la región se excluye de las capturas de pantalla
 (Windows 10 versión 2004 o superior); si no se puede, solo está la lectura manual.
 
-Para leer a mano, la región y el panel se vuelven invisibles un instante (así no se lee el propio texto) y se capturan solo esos píxeles.
+Para leer a mano, la región y el panel se vuelven invisibles un instakkkknte (así no se lee el propio texto) y se capturan solo esos píxeles.
 """
 import html as _html
 import time
@@ -952,6 +952,7 @@ class PanelTab(QWidget):
 
 class LiveMode(QObject):
     active_changed = pyqtSignal(bool)
+    view_changed = pyqtSignal()              # cambió lo que se ve: texto sobre la región o panel (los botones de la ventana principal)
     message = pyqtSignal(str)
     select_requested = pyqtSignal()          # clic derecho en la región: elegir otra
     auto_changed = pyqtSignal(bool)
@@ -1410,6 +1411,7 @@ class LiveMode(QObject):
 
     def _sync_toggle_text(self):
         self.panel.btn_toggle.setText("Quitar texto (O)" if self.text_visible else "Poner texto (O)")
+        self.view_changed.emit()
 
     def toggle_merge(self):
         """«M» / Ctrl+Alt+M: une o separa las líneas partidas y vuelve a procesar la última lectura."""
