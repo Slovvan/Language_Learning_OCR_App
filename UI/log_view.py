@@ -12,8 +12,8 @@ from pathlib import Path
 from PyQt5.QtCore import QItemSelectionModel, QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QGuiApplication, QKeySequence, QPainter, QPen
 from PyQt5.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
-                             QPushButton, QStackedWidget, QStyle, QStyledItemDelegate, QTableWidget, QTableWidgetItem,
-                             QTextEdit, QVBoxLayout, QWidget)
+                             QPushButton, QSizePolicy, QSplitter, QSplitterHandle, QStackedWidget, QStyle,
+                             QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget)
 
 import Translator.languages as languages
 import Cards.log_export as log_export
@@ -26,8 +26,10 @@ SESSION_START = datetime.now()              # «Esta sesión» = desde que se ab
 MONTHS = ("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic")
 FILTERS = (("all", "Todas"), ("today", "Hoy"), ("yesterday", "Ayer"), ("session", "Esta sesión"))
 COL_CHECK, COL_TIME, COL_SRC, COL_DST = range(4)
-PANEL_HEIGHT = 150                          # alto fijo del panel Original / Traducción (no depende del texto)
-TEXT_HEIGHT = 72                            # alto fijo de cada caja de texto (si la frase es larga se desplaza)
+PANEL_HEIGHT = 224                          # alto inicial del panel Original / Traducción (no depende del texto)
+PANEL_MIN = 170                             # lo más bajo que se puede dejar el panel arrastrando
+TABLE_MIN = 120                             # y lo más bajo que se puede dejar la tabla
+SETTING_PANEL = "log_panel_height"          # el alto elegido se recuerda entre sesiones
 
 
 def one_line(text: str) -> str:
@@ -115,15 +117,51 @@ class _LogTable(QTableWidget):
         super().keyPressEvent(event)
 
 
+class _Grip(QSplitterHandle):
+    """Asa para arrastrar el panel: una barrita centrada que se ilumina al pasar el mouse."""
+
+    def __init__(self, orientation, parent):
+        super().__init__(orientation, parent)
+        self.setCursor(Qt.SizeVerCursor)
+        self.setToolTip("Arrastra para cambiar la altura del panel (se recuerda)")
+        self._hover = False
+
+    def enterEvent(self, event):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, event):
+        self._hover = False
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#6fd3ff" if self._hover else "#33405a"))
+        bar = QRectF(0, 0, 44, 4)
+        bar.moveCenter(QPointF(self.width() / 2, self.height() / 2))
+        p.drawRoundedRect(bar, 2, 2)
+        p.end()
+
+
+class _Splitter(QSplitter):
+    def createHandle(self):
+        return _Grip(self.orientation(), self)
+
+
 class LogPage(QWidget):
     """Lista de capturas con filtros, panel de la frase elegida y exportación."""
 
     changed = pyqtSignal()                        # se eliminaron frases (la ventana principal actualiza su contador)
 
-    def __init__(self, log, words, parent=None):
+    def __init__(self, log, words, parent=None, settings=None):
         super().__init__(parent)
         self.log = log
         self.words = words
+        self._settings = settings                 # opcional: aquí se recuerda el alto del panel
+        self._panel_user = settings is not None and settings.value(SETTING_PANEL) is not None   # ¿lo eligió la persona?
+        self._panel_h = self._load_panel_height()
         self._current = None                      # LogEntry mostrada en el panel (None si no hay una sola elegida)
         self._selection = ()                      # ids elegidos la última vez (para saber si la selección cambió)
         self._range = "all"
@@ -212,7 +250,8 @@ class LogPage(QWidget):
         self.translation = QTextEdit()
         self.translation.setReadOnly(True)
         for box in (self.original, self.translation):
-            box.setFixedHeight(TEXT_HEIGHT)
+            box.setMinimumHeight(44)
+            box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             box.setTabChangesFocus(True)
         self.lbl_original = QLabel()
         self.lbl_original.setObjectName("sect")
@@ -226,29 +265,35 @@ class LogPage(QWidget):
         self.hint = QLabel("Mouse sobre una palabra del original: significado · clic: guardarla")
         self.hint.setObjectName("muted")
 
-        def column(label, button, box):
+        def row(label, button, box):
             col = QVBoxLayout()
-            col.setSpacing(6)
+            col.setSpacing(4)
             top = QHBoxLayout()
             top.addWidget(label)
             top.addStretch(1)
             top.addWidget(button)
             col.addLayout(top)
-            col.addWidget(box)
+            col.addWidget(box, 1)
             return col
         self.detail = QFrame()
         self.detail.setObjectName("card")
-        self.detail.setFixedHeight(PANEL_HEIGHT)
-        grid = QVBoxLayout(self.detail)
-        grid.setContentsMargins(16, 10, 16, 10)
-        grid.setSpacing(4)
-        cols = QHBoxLayout()
-        cols.setSpacing(14)
-        cols.addLayout(column(self.lbl_original, self.btn_copy_src, self.original), 1)
-        cols.addLayout(column(self.lbl_translation, self.btn_copy_dst, self.translation), 1)
-        grid.addLayout(cols)
-        grid.addWidget(self.hint)
+        self.detail.setMinimumHeight(PANEL_MIN)
+        rows = QVBoxLayout(self.detail)
+        rows.setContentsMargins(16, 10, 16, 8)
+        rows.setSpacing(8)
+        rows.addLayout(row(self.lbl_original, self.btn_copy_src, self.original), 1)      # una fila debajo de la otra
+        rows.addLayout(row(self.lbl_translation, self.btn_copy_dst, self.translation), 1)
+        rows.addWidget(self.hint)
         self.detail.setVisible(False)
+        # tabla arriba y panel abajo, con un asa en medio para estirar el panel y leer textos largos
+        self.table_card.setMinimumHeight(TABLE_MIN)
+        self.split = _Splitter(Qt.Vertical)
+        self.split.setHandleWidth(16)
+        self.split.setChildrenCollapsible(False)
+        self.split.addWidget(self.stack)
+        self.split.addWidget(self.detail)
+        self.split.setStretchFactor(0, 1)           # al cambiar el tamaño de la ventana, la tabla absorbe la diferencia
+        self.split.setStretchFactor(1, 0)
 
         # --- barra de abajo ---
         self.btn_delete = QPushButton("Eliminar seleccionadas")
@@ -279,8 +324,7 @@ class LogPage(QWidget):
         layout.setSpacing(10)
         layout.addLayout(head)
         layout.addLayout(chips_row)
-        layout.addWidget(self.stack, 1)
-        layout.addWidget(self.detail)
+        layout.addWidget(self.split, 1)
         layout.addWidget(self.info)
         layout.addLayout(bar)
 
@@ -288,6 +332,7 @@ class LogPage(QWidget):
         self.sort.currentIndexChanged.connect(lambda _i: self.reload(user=True))
         self.table.itemSelectionChanged.connect(self._on_selection)
         self.table.delete_pressed.connect(self.delete_selected)
+        self.split.splitterMoved.connect(lambda _p, _i: self._remember_panel_height())
         self.btn_delete.clicked.connect(self.delete_selected)
         self.btn_csv.clicked.connect(lambda: self.export("csv"))
         self.btn_txt.clicked.connect(lambda: self.export("txt"))
@@ -405,6 +450,8 @@ class LogPage(QWidget):
         was = self.detail.isVisible()
         self.detail.setVisible(self._current is not None)
         if self._current is not None and not was:
+            self._apply_panel_height()
+            QTimer.singleShot(0, self._apply_panel_height)
             QTimer.singleShot(0, self._keep_selection_visible)      # la tabla se encogió: que la fila siga a la vista
         n = len(ids)
         self.selected_label.setText(f"{n} seleccionada{'s' if n != 1 else ''}" if n else "")
@@ -415,6 +462,33 @@ class LogPage(QWidget):
         if self.info.isVisible() and tuple(ids) != self._selection:
             self.show_message("")                  # el aviso de la acción anterior ya no viene al caso
         self._selection = tuple(ids)
+
+    # --- alto del panel (lo elige la persona arrastrando el asa) ---
+    def _load_panel_height(self) -> int:
+        try:
+            return max(PANEL_MIN, min(900, int(float(self._settings.value(SETTING_PANEL, PANEL_HEIGHT)))))
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            return PANEL_HEIGHT
+
+    def _apply_panel_height(self):
+        """Deja el panel con el alto elegido (o el que quepa si la ventana es baja) y la tabla con el resto."""
+        if not self.detail.isVisibleTo(self):
+            return
+        total = sum(self.split.sizes()) or self.split.height()
+        wanted = self._panel_h if self._panel_user else min(self._panel_h, max(PANEL_MIN, int(total * 0.52)))   # sin elección propia: no más de la mitad
+        h = max(PANEL_MIN, min(wanted, total - TABLE_MIN - self.split.handleWidth()))
+        self.split.setSizes([max(TABLE_MIN, total - h), h])
+
+    def _remember_panel_height(self):
+        if not self.detail.isVisibleTo(self):
+            return
+        self._panel_h = max(PANEL_MIN, self.detail.height())
+        self._panel_user = True
+        if self._settings is not None:
+            try:
+                self._settings.setValue(SETTING_PANEL, self._panel_h)
+            except RuntimeError:
+                pass
 
     def _keep_selection_visible(self):
         rows = sorted({i.row() for i in self.table.selectedIndexes()})

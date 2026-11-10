@@ -112,6 +112,17 @@ class WordService(QObject):
         """¿La palabra de esta entrada del glosario ya tiene tarjeta (en el idioma activo)?"""
         return entry.lang == self.store.lang and self.store.has(entry.key)
 
+    def card_preview(self, entry):
+        """Cómo quedaría la tarjeta de una entrada del glosario (sin guardarla), para la vista previa."""
+        if entry is None:
+            return None
+        result = self.glossary.lookup(entry.lang, entry.word, "", entry.key)
+        card = build_card(entry.word, entry.key, result, entry.sentence.strip(), entry.lang)
+        card.sentence_es = entry.sentence_es.strip()
+        if not card.reading:
+            card.reading = entry.reading
+        return card
+
     def card_from_entry(self, entry):
         """Tarjeta de una palabra del glosario (con tu significado, su frase y la traducción de la frase).
 

@@ -525,6 +525,8 @@ class MainWindow(QWidget):
         self._update_buttons()
         if self.cards_window is not None:
             self.cards_window.reload()
+        if self.glossary_window is not None:
+            self.glossary_window.refresh_cards()
 
     def open_cards(self):
         """Muestra la página «Tarjetas» dentro de la ventana principal."""
@@ -540,25 +542,26 @@ class MainWindow(QWidget):
 
     def _show_page(self, page, nav_button):
         self.stack.setCurrentWidget(page)
-        for b in (self.btn_nav_capture, self.btn_cards, self.btn_log):
+        for b in (self.btn_nav_capture, self.btn_cards, self.btn_log, self.btn_glossary):
             b.set_current(b is nav_button)
 
     def open_glossary(self):
+        """Muestra la página «Glosario» dentro de la ventana principal."""
         lang = languages.active().code
         if self.glossary_window is None:
             self.glossary_window = GlossaryWindow(
                 self.glossary, lambda word: self.words.dictionary.key_for(word, ""), self,
-                make_card=self.words.card_from_entry, has_card=self.words.has_card_for, settings=self.settings)
+                make_card=self.words.card_from_entry, has_card=self.words.has_card_for, settings=self.settings,
+                preview_card=self.words.card_preview)
             self.glossary_window.changed.connect(self._cards_changed)
+            self.stack.addWidget(self.glossary_window)
         self.glossary_window.set_language(lang)
-        self.glossary_window.show()
-        self.glossary_window.raise_()
-        self.glossary_window.activateWindow()
+        self._show_page(self.glossary_window, self.btn_glossary)
 
     def open_log(self):
         """Muestra la página «Registro» dentro de la ventana principal."""
         if self.log_window is None:
-            self.log_window = LogPage(self.log, self.words, self)
+            self.log_window = LogPage(self.log, self.words, self, settings=self.settings)
             self.log_window.changed.connect(self._update_buttons)
             self.stack.addWidget(self.log_window)
         self.log_window.reload()
@@ -569,7 +572,7 @@ class MainWindow(QWidget):
         """Minimiza las ventanas de la app para que no salgan en la captura (siguen en la barra
         de tareas y no se vuelven a abrir solas). ¿Alguna estaba a la vista?"""
         shown = False
-        for w in (self, self.glossary_window):
+        for w in (self,):
             if w is not None and w.isVisible() and not w.isMinimized():
                 shown = True
                 w.showMinimized()
@@ -918,9 +921,6 @@ class MainWindow(QWidget):
         if self.overlay is not None:
             self.overlay.hide()
         self.live.shutdown()
-        for w in (self.glossary_window,):
-            if w is not None:
-                w.close()
         self.hotkey.stop()
         self.thread.quit()
         self.thread.wait(3000)
