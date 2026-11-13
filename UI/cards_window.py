@@ -165,7 +165,7 @@ def _clear_layout(layout):
 
 class _Pill(QLabel):
     """Etiqueta redondeada (tipo de palabra, nivel JLPT, frecuencia). Se pinta a mano: el estilo de Qt no redondea las etiquetas."""
-    COLORS = {"pos": "#2a62a8", "jlpt": "#8e24aa", "freq": "#5e43b5"}
+    COLORS = {"pos": "#2a62a8", "jlpt": "#8e24aa", "freq": "#5e43b5", "use": "#1f7a4d", "key": "#2a3345"}
 
     def __init__(self, text: str, kind: str, parent=None):
         super().__init__(text, parent)

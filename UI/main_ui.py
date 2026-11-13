@@ -8,7 +8,7 @@ import tempfile
 
 from PyQt5.QtCore import QPointF, Qt
 from PyQt5.QtGui import QColor, QPainter, QPen, QPixmap
-from PyQt5.QtWidgets import QHBoxLayout, QLabel, QMessageBox, QPushButton
+from PyQt5.QtWidgets import QDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QVBoxLayout
 
 SHELL_QSS = """
 QWidget#shell { background:#12141a; }
@@ -89,7 +89,24 @@ QWidget#shell QHeaderView::section { background:transparent; color:#7fa3b8; font
     border:none; border-bottom:1px solid #2a3345; padding:0 7px; }
 QWidget#shell QTableCornerButton::section { background:transparent; border:none; }
 QWidget#shell QLabel#preview { border:1px dashed #3a475c; border-radius:10px; color:#7d8899; }
+QWidget#shell QWidget#row { border:none; border-bottom:1px solid #222a3a; background:transparent; }
+QWidget#shell QWidget#row[last="true"] { border-bottom:none; }
+QWidget#shell QLabel#rowtitle { color:#f2f6fc; font-size:14px; font-weight:700; }
+QWidget#shell QLabel#rowhelp { color:#8793a6; font-size:12px; }
+QWidget#shell QLabel#rowwarn { color:#e0a548; font-size:12px; }
+QWidget#shell QLabel#value { color:#6fd3ff; font-size:13px; font-weight:700; }
+QWidget#shell QLabel#intro { color:#8793a6; font-size:12px; }
+QWidget#shell QLabel#cardname { color:#ffffff; font-size:18px; font-weight:700; }
+QWidget#shell QPushButton#iconbtn { background:transparent; border:none; color:#8fb0c8; font-size:16px; padding:0; min-width:30px; max-width:30px; min-height:30px; max-height:30px; }
+QWidget#shell QPushButton#iconbtn:hover { background:rgba(255,255,255,26); color:#ffffff; }
+QWidget#shell QPushButton#iconbtn:disabled { color:#3f4a5c; background:transparent; }
+QWidget#shell QFrame#card[active="true"] { border:1px solid #38b6dc; background:#16243a; }
+QWidget#shell QSlider::groove:horizontal { height:4px; background:#2a3345; border-radius:2px; }
+QWidget#shell QSlider::sub-page:horizontal { background:#0b8fb8; border-radius:2px; }
+QWidget#shell QSlider::handle:horizontal { width:16px; height:16px; margin:-6px 0; border-radius:8px; background:#e8f4fb; }
+QWidget#shell QSlider::handle:horizontal:hover { background:#ffffff; }
 """
+
 
 
 def _check_icon() -> str:
@@ -218,6 +235,17 @@ QMessageBox QPushButton[danger="true"]:hover { background:#bd4545; }
 """
 
 
+PROMPT_QSS = """
+QDialog { background:#161c27; }
+QLabel { color:#e8eef7; font-size:13px; background:transparent; }
+QLineEdit { color:#e8eef7; background:#0e1015; border:1px solid #2a3345; border-radius:8px; padding:7px 10px; font-size:14px; selection-background-color:#1d4a63; }
+QLineEdit:focus { border-color:#38b6dc; }
+QPushButton { color:#e8eef7; background:#222b3a; border:1px solid #33405a; border-radius:8px; padding:7px 18px; min-width:84px; }
+QPushButton:hover { background:#2b3750; }
+QPushButton:default { background:#1b8fb5; border-color:#38b6dc; color:#ffffff; }
+"""
+
+
 def confirm(parent, title: str, text: str, yes_text="Aceptar", no_text="Cancelar", danger=False) -> bool:
     """Pregunta de sí/no con los colores de la app (el cuadro estándar heredaba el estilo oscuro y salía en blanco).
     Con `danger` el botón de aceptar es rojo y la opción segura (cancelar) queda como predeterminada."""
@@ -231,3 +259,30 @@ def confirm(parent, title: str, text: str, yes_text="Aceptar", no_text="Cancelar
     box.setEscapeButton(no)
     box.exec_()
     return box.clickedButton() is yes
+
+
+def ask_text(parent, title: str, label: str, text: str = ""):
+    """Pide un texto con los colores de la app. Devuelve (texto, aceptado), igual que QInputDialog.getText."""
+    dlg = QDialog(parent.window() if parent is not None else None, Qt.Dialog | Qt.WindowCloseButtonHint)
+    dlg.setWindowTitle(title)
+    dlg.setStyleSheet(PROMPT_QSS)
+    dlg.setMinimumWidth(360)
+    lay = QVBoxLayout(dlg)
+    lay.setContentsMargins(18, 16, 18, 14)
+    lay.setSpacing(10)
+    lay.addWidget(QLabel(label))
+    edit = QLineEdit(text)
+    edit.selectAll()
+    lay.addWidget(edit)
+    row = QHBoxLayout()
+    row.addStretch(1)
+    no, yes = QPushButton("Cancelar"), QPushButton("Aceptar")
+    yes.setDefault(True)
+    no.clicked.connect(dlg.reject)
+    yes.clicked.connect(dlg.accept)
+    edit.returnPressed.connect(dlg.accept)
+    row.addWidget(no)
+    row.addWidget(yes)
+    lay.addLayout(row)
+    accepted = dlg.exec_() == QDialog.Accepted
+    return edit.text(), accepted

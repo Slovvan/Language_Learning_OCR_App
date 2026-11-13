@@ -23,7 +23,20 @@ NUMBERS = {
     "live_panel_font": (16, 11, 32),        # tamaño de letra del panel (px)
     "live_text_opacity": (100, 30, 100),    # opacidad (%) del fondo del texto dibujado sobre la región
     "popup_scale": (100, 70, 200),          # tamaño (%) de la letra de la ventanita del diccionario
+    "frozen_dim": (47, 10, 90),             # oscurecimiento (%) de lo que queda fuera de la región en la captura congelada
 }
+
+
+PANEL_MODES = ("full", "minimal", "tab")
+
+
+def panel_mode(settings) -> str:
+    """Aspecto del panel de traducción: «full» (completo), «minimal» o «tab» (viñeta). Lo guardado antes de que existieran
+    los tres aspectos era solo «viñeta sí / no» (`live_panel_tab`): se respeta."""
+    mode = str(settings.value("live_panel_mode", "") or "")
+    if mode in PANEL_MODES:
+        return mode
+    return "tab" if settings.value("live_panel_tab", False) in (True, "true", "1", 1) else "full"
 
 
 def get_number(settings, key: str) -> int:
@@ -74,6 +87,7 @@ FROZEN_KEYS = {          # acción -> (tecla por defecto, nombre)
     "mode_vertical": ("3", "OCR vertical (japonés)"),
 }
 LIVE_KEYS = {
+    "read": ("R", "Leer la región ahora"),
     "panel": ("T", "Abrir / cerrar el panel de traducción"),
     "text": ("O", "Quitar / poner el texto sobre el original"),
     "merge": ("M", "Unir / separar líneas"),

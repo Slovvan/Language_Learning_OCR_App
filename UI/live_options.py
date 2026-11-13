@@ -61,10 +61,10 @@ class LiveOptions(QObject):
                 self.set(key, bool(values[key]))
 
 
-def checkbox(model: LiveOptions, key: str, parent=None) -> QCheckBox:
+def checkbox(model: LiveOptions, key: str, parent=None, cls=QCheckBox) -> QCheckBox:
     """Casilla ligada a la opción: sigue a las demás casillas de la misma opción."""
     _k, text, tip, _d, _g = _INFO[key]
-    box = QCheckBox(text, parent)
+    box = cls(text, parent)
     box.setToolTip(tip)
     box.setChecked(model.get(key))
     box.toggled.connect(lambda on, k=key: model.set(k, on))

@@ -66,6 +66,12 @@ _KANJI_RUN = re.compile("[一-鿿㐀-䶿々〆]+")
 _KATA_LOOKALIKE = {"一": "ー", "卜": "ト", "口": "ロ", "力": "カ", "夕": "タ", "工": "エ",
                    "二": "ニ", "八": "ハ"}
 _HIRA_LOOKALIKE = {"〈": "く", "＜": "く"}
+# Formas antiguas / chinas de un kanji que el OCR da en vez de la japonesa de hoy (戾れない -> 戻れない). Son letras
+# que no se usan en japonés corriente, así que se cambian sin mirar el contexto.
+_KANJI_VARIANT = {"戾": "戻", "戶": "戸", "户": "戸", "來": "来"}
+# Una て pequeña (ているところ, 見て…) el OCR la lee a veces como la cifra «2»: solo si va pegada a hiragana o kanji,
+# sin otras cifras, y lo que sigue no es un contador (2つ, 2こ, 2か月: «ひとつ2つ»).
+_COUNTER_HIRA = set("つこかにひほふどばびさ")
 _EDGE = set("、。！？!?…「」『』（）() 　")        # límites de palabra: signos, espacios y fin de línea
 _ORPHAN = set("！？!?。…‥、」』）)")                  # signos que no pueden ir solos en una línea
 # Cifras y letras de ancho completo -> ASCII (5０ -> 50). Una a una, para no mover posiciones.
@@ -123,6 +129,15 @@ def _kata_or_edge(c: str) -> bool:
     return c == "" or is_kata(c) or c in _EDGE
 
 
+def _is_small_te(prev: str, nxt: str) -> bool:
+    """¿La cifra «2» entre `prev` y `nxt` es en realidad una て pequeña?"""
+    if prev.isdigit() or nxt.isdigit() or nxt in _COUNTER_HIRA:
+        return False
+    if is_hira(prev):
+        return nxt == "" or nxt in _EDGE or is_hira(nxt)
+    return is_kanji(prev) and is_hira(nxt)                 # 第2話, 2人: con kanji detrás es una cifra de verdad
+
+
 def fix_chars(text: str, mode: Mode) -> str:
     """Corrige confusiones kana/kanji según el contexto. Cambia caracteres uno a uno: no mueve posiciones.
 
@@ -139,7 +154,11 @@ def fix_chars(text: str, mode: Mode) -> str:
     for i, c in enumerate(text):
         prev = text[i - 1] if i else ""
         nxt = text[i + 1] if i + 1 < n else ""
-        if c in "?!" and (is_kana(prev) or is_kanji(prev) or prev in "、。」』）…"):
+        if c in _KANJI_VARIANT:
+            out[i] = _KANJI_VARIANT[c]
+        elif c in "2２" and _is_small_te(prev, nxt):
+            out[i] = "て"
+        elif c in "?!" and (is_kana(prev) or is_kanji(prev) or prev in "、。」』）…"):
             out[i] = "？" if c == "?" else "！"                   # el OCR da ? y ! de ancho medio tras japonés
         elif c in _HIRA_LOOKALIKE:
             if is_hira(prev) or is_hira(nxt):

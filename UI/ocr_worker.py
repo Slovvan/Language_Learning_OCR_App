@@ -90,7 +90,8 @@ class OcrWorker(QObject):
             self.done.emit()
             return
         try:
-            res = self._engine.read(image)
+            vertical = (languages.get_pack(self.language).has_ocr_modes and self.ocr_mode is japanese.Mode.VERTICAL)
+            res = self._engine.read(image, vertical=vertical) if vertical else self._engine.read(image)
             if languages.get_pack(self.language).has_ocr_modes:   # japonés: filas, furigana, confusiones
                 res = japanese.process(res, self.ocr_mode)
                 res = self._repair_japanese(res)

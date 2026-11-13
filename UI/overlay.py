@@ -27,7 +27,7 @@ from UI.word_popup import iter_words
 
 SELECT, READING, TEXT = range(3)          # estados de la capa
 
-DIM = QColor(0, 0, 0, 120)                # oscurece lo que queda fuera de la región
+DIM = QColor(0, 0, 0, 120)                # oscurece lo que queda fuera de la región (47 %, el valor de fábrica)
 ACCENT = QColor(0, 200, 255)
 MARK = QColor(46, 190, 80, 150)           # fondo de las palabras ya guardadas
 PENDING = QColor(240, 150, 30, 150)       # fondo de las palabras sin significado (pendientes)
@@ -148,6 +148,7 @@ class CaptureOverlay(QWidget):
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self.select_only = False
+        self._dim = DIM
         self._frame = None
         self._pixmap = None
         self._state = SELECT
@@ -516,6 +517,11 @@ class CaptureOverlay(QWidget):
         else:
             super().keyPressEvent(e)
 
+    def set_dim(self, percent: int):
+        """Cuánto se oscurece lo que queda fuera de la región (10 a 90 %)."""
+        self._dim = QColor(0, 0, 0, round(255 * max(0, min(100, percent)) / 100))
+        self.update()
+
     def set_keys(self, keys: dict):
         self.keys = dict(keys)
         self.mode_bar.set_keys(self.keys)
@@ -564,7 +570,7 @@ class CaptureOverlay(QWidget):
         p.save()
         if hole is not None:
             p.setClipRegion(QRegion(self.rect()).subtracted(QRegion(hole)))
-        p.fillRect(self.rect(), DIM)
+        p.fillRect(self.rect(), self._dim)
         p.restore()
 
         if self._state == TEXT and self._show_layer:

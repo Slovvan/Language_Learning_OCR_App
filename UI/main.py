@@ -20,7 +20,7 @@ from DB.db_safe import open_safe
 from DB.phrase_log import PhraseLog
 from DB.glossary import GlossaryDictionary, UserGlossary
 from UI.glossary_window import GlossaryWindow
-from UI.main_ui import NavButton, StatusLabel, build_qss, set_prop
+from UI.main_ui import NavButton, StatusLabel, confirm, build_qss, set_prop
 from UI.log_view import LogPage
 from UI.overlay import SELECT, CaptureOverlay
 from UI.word_popup import HoverTextEdit, WordPopup
@@ -43,6 +43,7 @@ import DB.phrase_log as _log_mod
 
 import Translator.japanese as japanese
 import Translator.languages as languages
+import UI.main_ui as main_ui
 
 
 def make_icon() -> QIcon:
@@ -542,7 +543,7 @@ class MainWindow(QWidget):
 
     def _show_page(self, page, nav_button):
         self.stack.setCurrentWidget(page)
-        for b in (self.btn_nav_capture, self.btn_cards, self.btn_log, self.btn_glossary):
+        for b in (self.btn_nav_capture, self.btn_cards, self.btn_log, self.btn_glossary, self.btn_settings):
             b.set_current(b is nav_button)
 
     def open_glossary(self):
@@ -603,18 +604,17 @@ class MainWindow(QWidget):
         self._update_capture_ui()
 
     def open_settings(self, tab: int = None):
-        """Abre Configuración (en la pestaña `tab`: 0 atajos, 1 captura congelada, 2 modo en vivo, 3 apariencia, 4 perfiles)."""
+        """Muestra la página «Configuración» (en la pestaña `tab`: 0 atajos, 1 captura congelada, 2 modo en vivo, 3 apariencia, 4 perfiles)."""
         if self.settings_dialog is None:
             self.settings_dialog = SettingsDialog(self.settings, self.live_options, self)
             self.settings_dialog.changed.connect(self.apply_settings)
             self.settings_dialog.profile_use.connect(self.apply_profile)
             self.settings_dialog.profile_save.connect(self.save_profile)
             self.settings_dialog.profiles_changed.connect(self._reload_profiles)
+            self.stack.addWidget(self.settings_dialog)
         if tab is not None:
             self.settings_dialog.tabs.setCurrentIndex(tab)
-        self.settings_dialog.show()
-        self.settings_dialog.raise_()
-        self.settings_dialog.activateWindow()
+        self._show_page(self.settings_dialog, self.btn_settings)
 
     # --- perfiles por juego ---
     def _reload_profiles(self):
@@ -656,14 +656,14 @@ class MainWindow(QWidget):
         return ok
 
     def save_profile_dialog(self):
-        from PyQt5.QtWidgets import QInputDialog, QMessageBox
-        name, ok = QInputDialog.getText(self, "Guardar perfil", "Nombre del juego o perfil:",
-                                        text=str(self.settings.value("profile_active", "")))
+        name, ok = main_ui.ask_text(self, "Guardar perfil", "Nombre del juego o perfil:",
+                                    str(self.settings.value("profile_active", "")))
         name = name.strip()
         if not ok or not name:
             return
-        if name in profiles.load(self.settings) and QMessageBox.question(
-                self, "Guardar perfil", f"Ya existe «{name}». ¿Reemplazarlo con la configuración actual?") != QMessageBox.Yes:
+        if name in profiles.load(self.settings) and not confirm(
+                self, "Guardar perfil", f"Ya existe «{name}». ¿Reemplazarlo con la configuración actual?",
+                yes_text="Reemplazar", no_text="Cancelar"):
             return
         if self.save_profile(name):
             self.status.setText(f"Perfil «{name}» guardado" + ("" if self.live.has_region() else " (sin región: elige una región fija para incluirla)") + ".")
@@ -701,6 +701,8 @@ class MainWindow(QWidget):
             else:
                 notes.append("la región guardada queda fuera de las pantallas actuales: elígela de nuevo y guarda el perfil")
         self.status.setText(f"Perfil «{name}» aplicado" + (f" ({'; '.join(notes)})" if notes else "") + ".")
+        if self.settings_dialog is not None:
+            self.settings_dialog.reload_profiles()
 
     def apply_settings(self):
         """Atajos, textos con su atajo y valores numéricos del modo en vivo."""
@@ -709,6 +711,7 @@ class MainWindow(QWidget):
         self.popup.set_scale(get_number(self.settings, "popup_scale"))
         if self.overlay is not None:
             self.overlay.set_keys(load_keys(self.settings, "frozen"))
+            self.overlay.set_dim(get_number(self.settings, "frozen_dim"))
         self._sync_mode_bars()
         self._apply_hotkey_labels()
         self._update_capture_ui()
@@ -810,6 +813,7 @@ class MainWindow(QWidget):
         if self.overlay is None:
             self.overlay = CaptureOverlay()
             self.overlay.set_keys(load_keys(self.settings, "frozen"))
+            self.overlay.set_dim(get_number(self.settings, "frozen_dim"))
             self.overlay.region_selected.connect(self.on_region)
             self.overlay.word_anchor.connect(self.popup.set_anchor)
             self.overlay.hover_ended.connect(lambda: self.popup.set_anchor(None))

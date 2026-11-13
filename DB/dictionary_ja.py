@@ -14,8 +14,8 @@ import sqlite3
 from pathlib import Path
 
 from DB.dictionary import Entry, LookupResult, Sense
-from DB.ja_nlp import normalize, to_hiragana, tokenizer
 from DB.levels_ja import Levels
+from DB.ja_nlp import normalize, to_hiragana, tokenizer
 
 DB_PATH = Path(__file__).resolve().parent / "data" / "dictionary_ja.db"
 
@@ -74,6 +74,19 @@ for _e in _ROWS["え"]:
 for _i, _e in enumerate(_ROWS["え"]):
     for _v in ("あ", "い", "う", "お"):
         _E_ROW_TO_I[_e].append(_ROWS[_v][_i] if _i < len(_ROWS[_v]) else "")
+# Verbos potenciales: JMdict no trae 戻れる, 書ける, 買える... (solo 戻る, 書く, 買う); Sudachi sí los da como lema.
+# El potencial de un verbo godan es la fila え de su última sílaba + る (戻る -> 戻れる), y la forma «ら抜き»
+# de uno ichidan es ～れる (見る -> 見れる): en los dos casos, cambiar «え段 + る» por la sílaba de la fila う da el verbo base.
+_POTENTIAL_BASE = {"れ": "る", "け": "く", "げ": "ぐ", "せ": "す", "て": "つ", "ね": "ぬ", "べ": "ぶ", "め": "む", "え": "う"}
+
+
+def potential_bases(text: str) -> list:
+    """Verbo base del que `text` puede ser el potencial: 戻れる -> [戻る], 書ける -> [書く], 食べれる -> [食べる]."""
+    if len(text) < 2 or not text.endswith("る") or text[-2] not in _POTENTIAL_BASE:
+        return []
+    return [text[:-2] + _POTENTIAL_BASE[text[-2]]]
+
+
 _VOWEL_OF_SMALL_Y = {"ゃ": "あ", "ゅ": "う", "ょ": "お"}
 
 
@@ -135,8 +148,9 @@ class JaDictionary:
         if not self.available:
             return None
         hint = tokenizer.pos_hint(word, compound)
+        verb = any(h.startswith("v") for h in hint)
         fallback = None
-        for text in self._candidates(word, compound):
+        for text in self._candidates(word, compound, verb):
             rows = self._rows(text, hint)
             if not rows:
                 continue
@@ -179,6 +193,10 @@ class JaDictionary:
     def key_for(self, word: str, compound: str = "") -> str:
         """Clave de la tarjeta: la forma de diccionario (勝った y 勝つ son la misma tarjeta)."""
         text = (compound or word).strip()
+        if self.available and not self.has_form(text) and any(h.startswith("v") for h in tokenizer.pos_hint(word, compound)):
+            for base in potential_bases(text):
+                if self.has_form(base):
+                    return base                         # 戻れる y 戻る son la misma tarjeta
         h = to_hiragana(text)
         if h != text and self.available and not self.has_form(text) and self.has_form(h):
             return h                                    # キミ y きみ son la misma tarjeta
@@ -186,11 +204,16 @@ class JaDictionary:
 
     # --- interno ---
     @staticmethod
-    def _candidates(word: str, compound: str) -> list:
+    def _candidates(word: str, compound: str, verb: bool = False) -> list:
         out = []
         for t in (compound, word, normalize(compound), normalize(word)):
             if t and t not in out:
                 out.append(t)
+        if verb:                                            # 戻れる -> 戻る (solo si Sudachi dice que es un verbo)
+            for t in list(out):
+                for base in potential_bases(t):
+                    if base not in out:
+                        out.append(base)
         # Katakana de énfasis o de estilo (キミ, ワケ, プツプツ): JMdict solo los trae en hiragana o
         # con kanji. Se prueban al final, así las palabras que sí existen en katakana no cambian.
         for t in list(out):

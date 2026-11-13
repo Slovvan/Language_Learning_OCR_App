@@ -16,15 +16,17 @@ Lectura automática (opcional, A / Ctrl+Alt+A): se vigila la región y se lee cu
 vuelve con la lectura nueva. Para poder ver el juego por debajo, la región se excluye de las capturas de pantalla
 (Windows 10 versión 2004 o superior); si no se puede, solo está la lectura manual.
 
-Para leer a mano, la región y el panel se vuelven invisibles un instakkkknte (así no se lee el propio texto) y se capturan solo esos píxeles.
+Para leer a mano, la región y el panel se vuelven invisibles un instante (así no se lee el propio texto) y se capturan solo esos píxeles.
 """
 import html as _html
 import time
 from PyQt5.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QGuiApplication, QColor, QFont, QFontMetrics, QPainter, QPen, QRegion
-from PyQt5.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QGridLayout, QPushButton, QSizeGrip, QSizePolicy, QTextBrowser, QWidget,
-                             QVBoxLayout)
+from PyQt5.QtGui import (QGuiApplication, QColor, QFont, QFontMetrics, QPainter, QPen, QRegion, QTextCharFormat, QTextCursor, QTextDocument,
+                         QTextOption)
+from PyQt5.QtWidgets import (QApplication, QCheckBox, QFrame, QHBoxLayout, QLabel, QLayout, QPushButton, QScrollArea, QSizeGrip, QSizePolicy,
+                             QWidget, QVBoxLayout)
 
+from UI.app_settings import NUMBERS, get_number, hotkey_label, key_action, load_keys, panel_mode
 from UI.app_settings import get_number, hotkey_label, key_action, load_keys
 from UI.game_pause import focus_window, game_window_at, send_combo
 from UI.live_options import checkbox as option_checkbox, OPTIONS
@@ -539,51 +541,537 @@ class RegionLayer(QWidget):
         p.end()
 
 
+# ====================================================================== el panel de traducción (diseño P1 / P4 / viñeta)
+def _mix(color: QColor, other: QColor, f: float) -> QColor:
+    """`color` mezclado con `other` (f = 0 → color, 1 → other)."""
+    return QColor(round(color.red() + (other.red() - color.red()) * f),
+                  round(color.green() + (other.green() - color.green()) * f),
+                  round(color.blue() + (other.blue() - color.blue()) * f),
+                  round(color.alpha() + (other.alpha() - color.alpha()) * f))
+
+
+PANEL_BG = QColor(18, 20, 26)
+TONES = {"ok": QColor(110, 214, 150), "busy": QColor(244, 180, 70), "warn": QColor(242, 128, 118)}
+_WHITE, _BLACK = QColor(255, 255, 255), QColor(0, 0, 0)
+# bg, borde, texto, fondo de la ficha, borde de la ficha, texto de la ficha
+_PAL = {
+    "primary": ((14, 143, 181), (70, 196, 230), (255, 255, 255), (0, 0, 0, 70), (255, 255, 255, 90), (235, 250, 255)),
+    "on": ((28, 74, 96), (106, 200, 240), (232, 247, 255), (14, 20, 28), (255, 255, 255, 40), (186, 214, 232)),
+    "plain": ((32, 34, 41), (255, 255, 255, 42), (230, 232, 238), (18, 20, 26), (255, 255, 255, 36), (154, 170, 196)),
+    "danger": ((58, 30, 36), (170, 84, 94, 150), (255, 176, 176), (30, 16, 20), (255, 255, 255, 30), (230, 160, 160)),
+    "pill": ((30, 40, 56), (70, 88, 112), (200, 212, 230), (14, 20, 28), (255, 255, 255, 40), (150, 170, 200)),
+}
+
+
+class _KeyButton(QPushButton):
+    """Botón del panel con su tecla dibujada al lado («Leer ‹R›»). Si no cabe, se queda sin ficha («compacto»)."""
+
+    def __init__(self, text, variant="plain", glyph="", chip=""):
+        super().__init__(text)
+        self.variant, self.glyph, self._chip = variant, glyph, chip or ""
+        self._compact = False
+        self._on = False
+        self._h = 26 if variant == "pill" else 30
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedHeight(self._h)
+        self.setAttribute(Qt.WA_Hover, True)
+        self.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+
+    def _font(self):
+        f = QFont(self.font())
+        f.setPixelSize(12 if self.variant == "pill" else 13)
+        return f
+
+    def _chip_font(self):
+        f = QFont(self.font())
+        f.setPixelSize(11)
+        f.setBold(True)
+        return f
+
+    def chip(self) -> str:
+        return self._chip
+
+    def set_chip(self, text: str):
+        text = text or ""
+        if text != self._chip:
+            self._chip = text
+            self.updateGeometry()
+            self.update()
+
+    def set_compact(self, on: bool):
+        if bool(on) != self._compact:
+            self._compact = bool(on)
+            self.updateGeometry()
+            self.update()
+
+    def set_on(self, on: bool):
+        if bool(on) != self._on:
+            self._on = bool(on)
+            self.update()
+
+    def is_on(self) -> bool:
+        return self.isChecked() if self.isCheckable() else self._on
+
+    def setText(self, text):
+        super().setText(text)
+        self.updateGeometry()
+
+    def _chip_w(self) -> int:
+        return max(18, QFontMetrics(self._chip_font()).horizontalAdvance(self._chip) + 10)
+
+    def _width(self, with_chip: bool) -> int:
+        fm = QFontMetrics(self._font())
+        pad = 10 if self.variant == "pill" else 12
+        w = 2 * pad + fm.horizontalAdvance(self.text())
+        if self.glyph:
+            w += fm.horizontalAdvance(self.glyph) + 6
+        if with_chip and self._chip:
+            w += 8 + self._chip_w()
+        return w
+
+    def full_width(self) -> int:
+        return self._width(True)
+
+    def sizeHint(self):
+        return QSize(self._width(not self._compact), self._h)
+
+    def minimumSizeHint(self):
+        return QSize(self._width(self.variant == "pill"), self._h)
+
+    def paintEvent(self, _):
+        key = self.variant if self.variant in ("primary", "danger", "pill") else ("on" if self.is_on() else "plain")
+        bg, border, fg, cbg, cborder, cfg = (QColor(*c) for c in _PAL[key])
+        if self.isDown():
+            bg = _mix(bg, _BLACK, 0.2)
+        elif self.underMouse():
+            bg = _mix(bg, _WHITE, 0.12)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        p.setPen(QPen(border, 1))
+        p.setBrush(bg)
+        p.drawRoundedRect(r, r.height() / 2 if self.variant == "pill" else 7, r.height() / 2 if self.variant == "pill" else 7)
+        font = self._font()
+        fm = QFontMetrics(font)
+        with_chip = bool(self._chip) and not self._compact
+        content = self._width(with_chip) - 2 * (10 if self.variant == "pill" else 12)
+        x = (self.width() - content) / 2
+        p.setFont(font)
+        p.setPen(fg)
+        if self.glyph:
+            p.drawText(QRectF(x, 0, fm.horizontalAdvance(self.glyph) + 2, self.height()), Qt.AlignVCenter | Qt.AlignLeft, self.glyph)
+            x += fm.horizontalAdvance(self.glyph) + 6
+        tw = fm.horizontalAdvance(self.text())
+        p.drawText(QRectF(x, 0, tw + 2, self.height()), Qt.AlignVCenter | Qt.AlignLeft, self.text())
+        x += tw
+        if with_chip:
+            cw = self._chip_w()
+            cr = QRectF(x + 8, (self.height() - 18) / 2, cw, 18)
+            p.setPen(QPen(cborder, 1))
+            p.setBrush(cbg)
+            p.drawRoundedRect(cr.adjusted(0.5, 0.5, -0.5, -0.5), 5, 5)
+            p.setFont(self._chip_font())
+            p.setPen(cfg)
+            p.drawText(cr, Qt.AlignCenter, self._chip)
+        p.end()
+
+
+class _IconButton(QPushButton):
+    """Icono de la cabecera (copiar, limpiar, tuerca, cerrar): sin marco, se ilumina al pasar el mouse."""
+
+    def __init__(self, glyph, tip, size=(28, 26)):
+        super().__init__(glyph)
+        self.setObjectName("icon")
+        self.setToolTip(tip)
+        self.setFixedSize(*size)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setCursor(Qt.PointingHandCursor)
+
+
+class _Dot(QWidget):
+    """El puntito de estado (verde: listo, ámbar: leyendo / traduciendo, rojo: aviso)."""
+
+    def __init__(self):
+        super().__init__()
+        self.setFixedSize(10, 10)
+        self._color = TONES["ok"]
+
+    def set_tone(self, tone: str):
+        self._color = TONES.get(tone, TONES["ok"])
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(self._color)
+        p.drawEllipse(QRectF(self.rect()).adjusted(1, 1, -1, -1))
+        p.end()
+
+
+class _Elided(QLabel):
+    """Etiqueta de una línea que se corta con «…» si no cabe (el texto completo sigue en text() y en el tooltip)."""
+
+    def __init__(self, text=""):
+        super().__init__()
+        self._full = ""
+        self.setTextFormat(Qt.PlainText)
+        self.setText(text)
+
+    def text(self):
+        return self._full
+
+    def setText(self, text):
+        self._full = str(text)
+        self._elide()
+        self.updateGeometry()
+
+    def _elide(self):
+        shown = QFontMetrics(self.font()).elidedText(self._full, Qt.ElideRight, max(10, self.width()))
+        super().setText(shown)
+        self.setToolTip(self._full if shown != self._full else "")
+
+    def sizeHint(self):
+        return QSize(QFontMetrics(self.font()).horizontalAdvance(self._full) + 4, QLabel.sizeHint(self).height())
+
+    def minimumSizeHint(self):
+        return QSize(36, QLabel.minimumSizeHint(self).height())
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._elide()
+
+    def changeEvent(self, e):
+        super().changeEvent(e)
+        if e.type() in (QEvent.StyleChange, QEvent.FontChange):
+            self._elide()
+
+
+class _Wrap(QWidget):
+    """Texto que parte las líneas en los espacios (y, si una palabra no cabe sola, dentro de ella) y calcula su alto
+    según el ancho."""
+
+    def __init__(self, text, px, color, bold=False):
+        super().__init__()
+        self._text = text
+        font = QFont(self.font())
+        font.setPixelSize(max(9, int(px)))
+        font.setBold(bold)
+        self._font = font
+        self._doc = QTextDocument(self)
+        self._doc.setDocumentMargin(0)
+        self._doc.setDefaultFont(font)
+        opt = QTextOption()
+        opt.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        self._doc.setDefaultTextOption(opt)
+        self._doc.setPlainText(text)
+        cur = QTextCursor(self._doc)
+        cur.select(QTextCursor.Document)
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(color))
+        cur.mergeCharFormat(fmt)
+        policy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
+
+    def text(self) -> str:
+        return self._text
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, w):
+        self._doc.setTextWidth(max(20, w))
+        return int(self._doc.size().height()) + 2
+
+    def sizeHint(self):
+        return QSize(240, self.heightForWidth(240))
+
+    def minimumSizeHint(self):
+        return QSize(40, QFontMetrics(self._font).height() + 2)
+
+    def paintEvent(self, _):
+        self._doc.setTextWidth(max(20, self.width()))
+        p = QPainter(self)
+        p.setRenderHint(QPainter.TextAntialiasing)
+        self._doc.drawContents(p, QRectF(self.rect()))
+        p.end()
+
+
+class _EntryCard(QFrame):
+    """Una lectura del historial: el original (si se muestra) y la traducción. La última va destacada, en tarjeta."""
+    deleted = pyqtSignal(int)
+
+    def __init__(self, entry, latest, show_original, deletable, px):
+        super().__init__()
+        self.entry, self.latest = entry, latest
+        self._parts = []
+        lay = QHBoxLayout(self)
+        lay.setSizeConstraint(QLayout.SetNoConstraint)
+        lay.setContentsMargins(12, 8, 6, 9) if latest else lay.setContentsMargins(12, 3, 6, 3)
+        lay.setSpacing(4)
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        if show_original:
+            color, size = ("#8f9fb5", px - 2) if latest else ("#6b7686", px - 4)
+            w = _Wrap(entry["original"], size, color)
+            self._parts.append(w)
+            col.addWidget(w)
+        text = entry["translation"]
+        if text:
+            color, size, bold = ("#e2f3ff", px + 2, True) if latest else ("#7fa3b8", px - 1, False)
+        else:
+            text = "traduciendo ▪ ▪ ▪" if latest else "…"
+            color, size, bold = "#8f9fb5", px - 1, False
+        w = _Wrap(text, size, color, bold)
+        self._parts.append(w)
+        col.addWidget(w)
+        lay.addLayout(col, 1)
+        self.btn_del = None
+        if deletable:
+            self.btn_del = _IconButton("✕", "Borrar esta lectura del panel", (24, 24))
+            self.btn_del.clicked.connect(lambda: self.deleted.emit(self.entry["id"]))
+            lay.addWidget(self.btn_del, 0, Qt.AlignTop)
+
+    def plain(self) -> str:
+        return "\n".join(w.text() for w in self._parts)
+
+    def paintEvent(self, _):
+        if not self.latest:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(52, 76, 104), 1))
+        p.setBrush(QColor(28, 42, 61))
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8)
+        p.end()
+
+
+class _EntryView(QScrollArea):
+    """La lista de lecturas del panel (la más nueva abajo y destacada). Hace de «visor de texto»: toPlainText()."""
+    entry_deleted = pyqtSignal(int)
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("view")
+        self.setFrameShape(QFrame.NoFrame)
+        self.setWidgetResizable(False)                      # el alto de la lista lo calculo yo según el ancho (texto que se parte)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setFocusPolicy(Qt.NoFocus)
+        self._inner = QWidget()
+        self._lay = QVBoxLayout(self._inner)
+        self._lay.setSizeConstraint(QLayout.SetNoConstraint)     # el alto lo decide el ancho (texto que se parte), no un mínimo viejo
+        self._lay.setContentsMargins(0, 4, 4, 2)
+        self._lay.setSpacing(4)
+        self._lay.addStretch(1)
+        self.setWidget(self._inner)
+        self.viewport().setAutoFillBackground(False)      # (después de setWidget: este vuelve a activar el relleno)
+        self._inner.setAutoFillBackground(False)
+        self._stick = True                                 # pegado al final: la lectura nueva siempre se ve
+        bar = self.verticalScrollBar()
+        bar.rangeChanged.connect(lambda _a, _b: self._to_bottom() if self._stick else None)
+        bar.valueChanged.connect(lambda v: setattr(self, "_stick", v >= bar.maximum() - 2))
+        self._placeholder = ""
+        self._cards = []
+        self._hint = None
+
+    def setPlaceholderText(self, text: str):
+        self._placeholder = text
+        if self._hint is not None:
+            self._hint.setText(text)
+
+    def set_entries(self, entries, show_original: bool, deletable: bool, px: int):
+        """`entries`: [{id, original, translation}], la más nueva primero."""
+        while self._lay.count() > 1:
+            item = self._lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        self._cards, self._hint = [], None
+        ordered = list(reversed(entries))
+        if not ordered:
+            self._hint = QLabel(self._placeholder)
+            self._hint.setObjectName("hint")
+            self._hint.setWordWrap(True)
+            self._lay.insertWidget(0, self._hint)
+        for i, e in enumerate(ordered):
+            latest = i == len(ordered) - 1
+            card = _EntryCard(e, latest, show_original, deletable, px)
+            card.deleted.connect(self.entry_deleted)
+            self._cards.append(card)
+            self._lay.insertWidget(self._lay.count() - 1, card)
+            if latest and len(ordered) > 1:                   # más aire entre lo anterior y la lectura actual
+                self._lay.insertSpacing(self._lay.count() - 2, 4)
+        self._stick = True
+        self._fit()
+        QTimer.singleShot(0, self._settle)
+
+    def _fit(self):
+        """Da a la lista el ancho de la ventana y el alto que necesita el texto con ese ancho (dos pasadas: la barra de
+        desplazamiento, si aparece, le quita ancho)."""
+        for _ in range(2):
+            w = max(40, self.viewport().width())
+            h = max(self._lay.heightForWidth(w), self.viewport().height())
+            if self._inner.size() == QSize(w, h):
+                break
+            self._inner.setFixedSize(w, h)
+        self._inner.layout().activate()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit()
+
+    def _settle(self):
+        self._lay.invalidate()
+        self._fit()
+        self._to_bottom()
+
+    def _to_bottom(self):
+        bar = self.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def toPlainText(self) -> str:
+        return "\n".join(c.plain() for c in self._cards)
+
+    def card_count(self) -> int:
+        return len(self._cards)
+
+
+class _Switch(QCheckBox):
+    """Casilla con aspecto de interruptor (texto a la izquierda, interruptor a la derecha). Sigue siendo un QCheckBox."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedHeight(30)
+
+    def hitButton(self, pos):
+        """Todo el renglón (texto e interruptor) responde al clic: el QCheckBox normal solo responde sobre su casilla
+        y su texto a la izquierda, y el interruptor está dibujado a la derecha, donde no había nada."""
+        return self.rect().contains(pos)
+
+    def sizeHint(self):
+        return QSize(QFontMetrics(self._font()).horizontalAdvance(self.text()) + 56, 30)
+
+    def _font(self):
+        f = QFont(self.font())
+        f.setPixelSize(13)
+        return f
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setFont(self._font())
+        p.setPen(QColor(232, 238, 247))
+        tr = QRectF(0, 0, self.width() - 48, self.height())
+        p.drawText(tr, Qt.AlignVCenter | Qt.AlignLeft, QFontMetrics(self._font()).elidedText(self.text(), Qt.ElideRight, int(tr.width())))
+        on = self.isChecked()
+        track = QRectF(self.width() - 38, (self.height() - 20) / 2, 38, 20)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(14, 143, 181) if on else QColor(42, 51, 69))
+        p.drawRoundedRect(track, 10, 10)
+        knob = QRectF(track.right() - 17 if on else track.left() + 3, track.top() + 3, 14, 14)
+        p.setBrush(QColor(255, 255, 255) if on else QColor(150, 160, 178))
+        p.drawEllipse(knob)
+        if self.underMouse():
+            p.setBrush(QColor(255, 255, 255, 18))
+            p.drawRoundedRect(track.adjusted(-2, -2, 2, 2), 12, 12)
+        p.end()
+
+
 QUICK_STYLE = """
-QuickOptions { background: rgb(24, 27, 35); border: 1px solid rgba(255,255,255,90); border-radius: 8px; }
-QLabel { color: #9aa3b2; font-size: 11px; }
-QLabel#sect { color: #7fa3b8; font-size: 11px; font-weight: bold; padding-top: 4px; }
-QCheckBox { color: #e8eef7; font-size: 13px; spacing: 7px; padding: 2px 0; }
-QPushButton { color: #f2f2f2; background: rgba(255,255,255,18); border: 1px solid rgba(255,255,255,50);
-    border-radius: 5px; padding: 3px 9px; font-size: 12px; }
-QPushButton:hover { background: rgba(255,255,255,45); }
+QuickOptions { background: rgb(24, 27, 35); border: 1px solid rgba(255,255,255,90); border-radius: 10px; }
+QLabel { color: #9aa3b2; font-size: 12px; }
+QLabel#sect { color: #7fa3b8; font-size: 11px; font-weight: bold; padding-top: 4px; letter-spacing: 1px; }
+QLabel#size { color: #e8eef7; font-size: 13px; }
+QLabel#px { color: #e8eef7; font-size: 13px; min-width: 42px; qproperty-alignment: AlignCenter; }
+QFrame#line { background: rgba(255,255,255,26); border: none; }
+QPushButton { color: #f2f2f2; background: rgba(255,255,255,14); border: 1px solid rgba(255,255,255,50);
+    border-radius: 7px; padding: 6px 10px; font-size: 13px; text-align: left; }
+QPushButton:hover { background: rgba(255,255,255,40); }
+QPushButton#step { padding: 3px 0; min-width: 40px; max-width: 40px; text-align: center; font-weight: bold; }
 """
 QUICK_SECTIONS = (("read", "Lectura"), ("panel", "Panel"))
 
 
 class QuickOptions(QFrame):
-    """Menú de la tuerca ⚙: las casillas del modo en vivo, a mano sin abrir Configuración. Aparece al pasar el mouse por la
-    tuerca, no roba el foco y se cierra solo poco después de que el mouse se aleja."""
+    """Menú de la tuerca ⚙: los interruptores del modo en vivo y el tamaño de letra del panel, a mano sin abrir Configuración.
+    Aparece al pasar el mouse por la tuerca, no roba el foco y se cierra solo poco después de que el mouse se aleja."""
     settings_requested = pyqtSignal()
+    font_step = pyqtSignal(int)                  # -1 = A−, +1 = A+
     entered = pyqtSignal()
     left = pyqtSignal()
+    WIDTH = 290
 
     def __init__(self, model):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WA_TranslucentBackground)
         self.setObjectName("QuickOptions")
         self.setStyleSheet(QUICK_STYLE)
+        self.setFixedWidth(self.WIDTH)
         self.boxes = {}
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(12, 8, 12, 10)
-        lay.setSpacing(1)
+        lay.setContentsMargins(16, 10, 16, 14)
+        lay.setSpacing(0)
+        first = True
         for group, title in QUICK_SECTIONS:
+            if not first:
+                lay.addSpacing(6)
+                line = QFrame()
+                line.setObjectName("line")
+                line.setFixedHeight(1)
+                lay.addWidget(line)
+                lay.addSpacing(4)
+            first = False
             lab = QLabel(title.upper())
             lab.setObjectName("sect")
             lay.addWidget(lab)
             for key, _text, _tip, _default, g in OPTIONS:
                 if g == group:
-                    box = option_checkbox(model, key, self)
+                    box = option_checkbox(model, key, self, cls=_Switch)     # la misma casilla, dibujada como interruptor
                     box.setFocusPolicy(Qt.NoFocus)
                     self.boxes[key] = box
                     lay.addWidget(box)
+        lay.addSpacing(6)
+        line = QFrame()
+        line.setObjectName("line")
+        line.setFixedHeight(1)
+        lay.addWidget(line)
+        lay.addSpacing(8)
+        size_row = QHBoxLayout()
+        size_row.setSpacing(4)
+        label = QLabel("Tamaño de letra")
+        label.setObjectName("size")
+        self.btn_smaller = QPushButton("A−")
+        self.btn_smaller.setObjectName("step")
+        self.btn_smaller.setToolTip("Letra del panel más pequeña")
+        self.btn_bigger = QPushButton("A+")
+        self.btn_bigger.setObjectName("step")
+        self.btn_bigger.setToolTip("Letra del panel más grande")
+        self.lbl_px = QLabel("16 px")
+        self.lbl_px.setObjectName("px")
+        for b in (self.btn_smaller, self.btn_bigger):
+            b.setFocusPolicy(Qt.NoFocus)
+        self.btn_smaller.clicked.connect(lambda: self.font_step.emit(-1))
+        self.btn_bigger.clicked.connect(lambda: self.font_step.emit(1))
+        size_row.addWidget(label, 1)
+        size_row.addWidget(self.btn_smaller)
+        size_row.addWidget(self.lbl_px)
+        size_row.addWidget(self.btn_bigger)
+        lay.addLayout(size_row)
         more = QPushButton("Más ajustes…")
         more.setFocusPolicy(Qt.NoFocus)
         more.setToolTip("Abre Configuración ▸ Modo en vivo (tecla de pausa, tiempos, teclas, perfiles)")
         more.clicked.connect(self.settings_requested)
-        lay.addSpacing(6)
+        lay.addSpacing(10)
         lay.addWidget(more)
         self.adjustSize()
+
+    def set_font(self, px: int):
+        self.lbl_px.setText(f"{int(px)} px")
 
     def enterEvent(self, e):
         self.entered.emit()
@@ -592,6 +1080,14 @@ class QuickOptions(QFrame):
     def leaveEvent(self, e):
         self.left.emit()
         super().leaveEvent(e)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(255, 255, 255, 80), 1))
+        p.setBrush(QColor(24, 27, 35))
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
+        p.end()
 
     def show_near(self, anchor: QRect):
         """Se coloca bajo la tuerca (o encima si abajo no cabe), sin salirse de la pantalla."""
@@ -609,17 +1105,30 @@ class QuickOptions(QFrame):
 
 
 PANEL_STYLE = """
-LivePanel { background: rgb(18, 20, 26); border: 1px solid rgba(255,255,255,70); border-radius: 8px; }
-QLabel#head { color: #9aa3b2; font-size: 12px; }
-QTextBrowser { background: transparent; border: none; color: #b9e6ff; font-size: %PX%px; }
-QPushButton { color: #f2f2f2; background: rgba(255,255,255,18); border: 1px solid rgba(255,255,255,50);
-    border-radius: 5px; padding: 3px 9px; font-size: 13px; }
-QPushButton:hover { background: rgba(255,255,255,45); }
+QLabel#head { color: #6ed696; font-size: 13px; font-weight: bold; }
+QLabel#head[tone="busy"] { color: #f4b446; }
+QLabel#head[tone="warn"] { color: #f28076; }
+QLabel#dots { color: #6b7686; font-size: 16px; font-weight: bold; padding-right: 4px; }
+QLabel#hint { color: #6b7686; font-size: %PX%px; padding: 6px 2px; }
+QFrame#sep { background: rgba(255,255,255,28); border: none; }
+QScrollArea#view { background: transparent; font-size: %PX%px; }
+QPushButton#icon { background: transparent; border: none; border-radius: 6px; color: #b8c2d2; font-size: 15px; }
+QPushButton#icon:hover { background: rgba(255,255,255,34); color: #ffffff; }
+QPushButton#icon[on="true"] { background: rgba(0,200,255,70); color: #ffffff; }
+QScrollBar:vertical { background: transparent; width: 8px; margin: 2px 0; }
+QScrollBar::handle:vertical { background: rgba(255,255,255,60); border-radius: 3px; min-height: 24px; }
+QScrollBar::handle:vertical:hover { background: rgba(255,255,255,100); }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
 """
+HOVER_EXTRA = 38               # alto que gana el panel mínimo al pasar el mouse (se muestra la barra de botones)
+DEFAULT_H = {"full": 250, "minimal": 160}
 
 
 class LivePanel(QFrame):
-    """Panel con la última traducción. No roba el foco, se arrastra por la franja de arriba y se estira por la esquina."""
+    """Panel con las últimas traducciones. No roba el foco, se arrastra por la franja de arriba y se estira por la esquina.
+    Dos aspectos: «full» (completo: botones siempre a la vista) y «minimal» (solo estado y traducciones; al pasar el
+    mouse aparecen los iconos de la cabecera y la barra de botones)."""
     read_requested = pyqtSignal()
     toggle_requested = pyqtSignal()
     edit_requested = pyqtSignal()
@@ -629,6 +1138,8 @@ class LivePanel(QFrame):
     copy_requested = pyqtSignal()
     close_requested = pyqtSignal()
     clear_requested = pyqtSignal()
+    merge_requested = pyqtSignal()               # la píldora «Líneas unidas»
+    font_step = pyqtSignal(int)                  # A− / A+ del menú ⚙
     entry_deleted = pyqtSignal(int)              # ✕ de una entrada del historial
     size_changed = pyqtSignal(QSize)             # el usuario le cambió el tamaño
     key_pressed = pyqtSignal(int, int)
@@ -640,47 +1151,38 @@ class LivePanel(QFrame):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setObjectName("LivePanel")
         self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WA_TranslucentBackground)
         self._px = 16
+        self._mode = "full"
+        self._hover = False
         self.setStyleSheet(PANEL_STYLE.replace("%PX%", str(self._px)))
-        self.setMinimumSize(PANEL_MIN)
         self._region = QRect()
         self._user_size = None                   # tamaño que dejó el usuario
         self._moved = False
         self._drag = None
         self._placing = True
-        self.head = QLabel("En vivo")
-        self.head.setObjectName("head")
-        self.head.setCursor(Qt.SizeAllCursor)
-        self.btn_read = QPushButton("Leer")
-        self.btn_toggle = QPushButton("Quitar texto (O)")
-        self.btn_edit = QPushButton("Mover región (E)")
-        self.btn_auto = QPushButton("Automático (A)")
-        self.btn_auto.setCheckable(True)
-        self.btn_auto.setToolTip("Lee solo cuando el texto de la región cambia y se queda quieto (Ctrl+Alt+A)")
-        self.btn_freeze = QPushButton("Congelar (F)")
-        self.btn_stop = QPushButton("Detener")
         self._note = "En vivo"
         self._merge = True
-        for b in (self.btn_read, self.btn_auto, self.btn_toggle, self.btn_edit, self.btn_freeze, self.btn_stop):
-            b.setFocusPolicy(Qt.NoFocus)
-        self.btn_read.clicked.connect(self.read_requested)
-        self.btn_toggle.clicked.connect(self.toggle_requested)
-        self.btn_edit.clicked.connect(self.edit_requested)
-        self.btn_auto.clicked.connect(self.auto_requested)
-        self.btn_stop.clicked.connect(self.stop_requested)
-        self.btn_freeze.clicked.connect(self.freeze_requested)
-        self.btn_copy = QPushButton("Copiar")
-        self.btn_copy.setToolTip("Copia la última lectura al portapapeles (la traducción; con «Original en el panel», también el original)")
-        self.btn_close = QPushButton("✕")
-        self.btn_close.setToolTip("Cierra el panel (T o Ctrl+Alt+T lo vuelve a abrir)")
-        self.btn_close.setFixedWidth(30)
-        self.btn_close.setFocusPolicy(Qt.NoFocus)
+
+        # --- cabecera: estado, líneas unidas, iconos
+        self.dot = _Dot()
+        self.head = _Elided("En vivo")
+        self.head.setObjectName("head")
+        self.head.setProperty("tone", "ok")
+        self.btn_merge = _KeyButton("Líneas unidas", "pill", chip="M")
+        self.btn_merge.setToolTip("Une o separa las líneas que el juego parte (tecla M)")
+        self.btn_merge.clicked.connect(self.merge_requested)
+        self.dots = QLabel("···")
+        self.dots.setObjectName("dots")
+        self.dots.setToolTip("Pasa el mouse por el panel para ver los botones")
+        self.btn_copy = _IconButton("⧉", "Copia la última lectura al portapapeles (la traducción; con «Original en el panel», también el original)")
+        self.btn_clear = _IconButton("⌫", "Borra todo lo que muestra el panel (el registro principal de la app no se toca)")
+        self.btn_gear = _IconButton("⚙", "Opciones del modo en vivo (pasa el mouse; clic para dejarlo fijo)")
+        self.btn_gear.setObjectName("icon")
+        self.btn_close = _IconButton("✕", "Cierra el panel (T o Ctrl+Alt+T lo vuelve a abrir)")
+        self.btn_copy.clicked.connect(self.copy_requested)
+        self.btn_clear.clicked.connect(self.clear_requested)
         self.btn_close.clicked.connect(self.close_requested)
-        self.btn_gear = QPushButton("⚙")
-        self.btn_gear.setObjectName("gear")
-        self.btn_gear.setToolTip("Opciones del modo en vivo (pasa el mouse; clic para dejarlo fijo)")
-        self.btn_gear.setFixedWidth(30)
-        self.btn_gear.setFocusPolicy(Qt.NoFocus)
         self.btn_gear.installEventFilter(self)
         self.quick = None                            # el menú de la tuerca (lo crea set_options)
         self._quick_pinned = False
@@ -689,39 +1191,70 @@ class LivePanel(QFrame):
         self._quick_timer.setInterval(400)
         self._quick_timer.timeout.connect(self._quick_close)
         self.btn_gear.clicked.connect(self._gear_clicked)
-        self.btn_clear = QPushButton("Limpiar")
-        self.btn_clear.setToolTip("Borra todo lo que muestra el panel (el registro principal de la app no se toca)")
-        for b in (self.btn_copy, self.btn_clear):
-            b.setFocusPolicy(Qt.NoFocus)
-        self.btn_copy.clicked.connect(self.copy_requested)
-        self.btn_clear.clicked.connect(self.clear_requested)
-        self.head.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        self.view = QTextBrowser()
-        self.view.setOpenLinks(False)
-        self.view.anchorClicked.connect(self._anchor)
-        self.view.setReadOnly(True)
-        self.view.setFrameShape(QFrame.NoFrame)
-        self.view.setFocusPolicy(Qt.NoFocus)
-        self.view.setPlaceholderText("La traducción aparece aquí al pulsar «Leer».")
+        self._hover_timer = QTimer(self)             # (modo mínimo) el mouse salió: la barra se esconde un momento después
+        self._hover_timer.setSingleShot(True)
+        self._hover_timer.setInterval(450)
+        self._hover_timer.timeout.connect(self._hover_check)
+
+        self.header = QWidget()
+        self.header.setCursor(Qt.SizeAllCursor)
+        hl = QHBoxLayout(self.header)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(6)
+        hl.addWidget(self.dot, 0, Qt.AlignVCenter)
+        hl.addWidget(self.head)
+        hl.addWidget(self.btn_merge)
+        hl.addStretch(1)
+        hl.addWidget(self.dots)
+        for b in (self.btn_copy, self.btn_clear, self.btn_gear, self.btn_close):
+            hl.addWidget(b)
+        self.header.setFixedHeight(30)
+        self.sep = QFrame()
+        self.sep.setObjectName("sep")
+        self.sep.setFixedHeight(1)
+
+        # --- historial
+        self.view = _EntryView()
+        self.view.setPlaceholderText("La traducción aparecerá aquí.")
+        self.view.entry_deleted.connect(self.entry_deleted)
+
+        # --- barra de botones
+        self.btn_read = _KeyButton("Leer", "primary", glyph="▶", chip="R")
+        self.btn_auto = _KeyButton("Auto", "plain", chip="A")
+        self.btn_auto.setCheckable(True)
+        self.btn_auto.setToolTip("Lee solo cuando el texto de la región cambia y se queda quieto (Ctrl+Alt+A)")
+        self.btn_toggle = _KeyButton("Texto", "plain", chip="O")
+        self.btn_toggle.set_on(True)
+        self.btn_toggle.setToolTip("Quita o pone el texto dibujado sobre el original")
+        self.btn_edit = _KeyButton("Región", "plain", chip="E")
+        self.btn_edit.setToolTip("Mueve o estira la región fija")
+        self.btn_freeze = _KeyButton("Congelar", "plain", chip="F")
+        self.btn_freeze.setToolTip("Congela la pantalla con la última lectura")
+        self.btn_stop = _KeyButton("Detener", "danger", glyph="■")
+        self.btn_stop.setToolTip("Detiene el modo en vivo (Esc)")
+        self.buttons = (self.btn_read, self.btn_auto, self.btn_toggle, self.btn_edit, self.btn_freeze, self.btn_stop)
+        self.btn_read.clicked.connect(self.read_requested)
+        self.btn_toggle.clicked.connect(self.toggle_requested)
+        self.btn_edit.clicked.connect(self.edit_requested)
+        self.btn_auto.clicked.connect(self.auto_requested)
+        self.btn_stop.clicked.connect(self.stop_requested)
+        self.btn_freeze.clicked.connect(self.freeze_requested)
+        self.toolbar = QWidget()
+        tl = QHBoxLayout(self.toolbar)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.setSpacing(6)
+        for b in self.buttons[:-1]:
+            tl.addWidget(b)
+        tl.addStretch(1)
+        tl.addWidget(self.btn_stop)
+
         self.grip = QSizeGrip(self)
-        row = QGridLayout()
-        row.setHorizontalSpacing(5)
-        row.setVerticalSpacing(4)
-        for i, b in enumerate((self.btn_read, self.btn_auto, self.btn_toggle, self.btn_edit, self.btn_freeze, self.btn_stop)):
-            row.addWidget(b, i // 3, i % 3)
-        row.addWidget(self.grip, 1, 3, Qt.AlignBottom | Qt.AlignRight)
-        row.setColumnStretch(3, 1)
+        self.grip.setFixedSize(12, 12)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(10, 6, 10, 8)
-        lay.setSpacing(4)
-        head_row = QHBoxLayout()
-        head_row.setSpacing(5)
-        head_row.addWidget(self.head, 1)
-        head_row.addWidget(self.btn_copy)
-        head_row.addWidget(self.btn_clear)
-        head_row.addWidget(self.btn_gear)
-        head_row.addWidget(self.btn_close)
-        lay.addLayout(head_row)
+        lay.setContentsMargins(14, 8, 14, 10)
+        lay.setSpacing(6)
+        lay.addWidget(self.header)
+        lay.addWidget(self.sep)
         self.mode_bar = ModeBar()                    # modos de OCR del japonés (se esconde con otros idiomas)
         mode_row = QHBoxLayout()
         mode_row.setContentsMargins(0, 0, 0, 0)
@@ -729,24 +1262,99 @@ class LivePanel(QFrame):
         mode_row.addStretch(1)
         lay.addLayout(mode_row)
         lay.addWidget(self.view, 1)
-        lay.addLayout(row)
+        lay.addWidget(self.toolbar)
         self._placing = False
-        # que los botones siempre quepan enteros (3 por fila)
-        cols = [max(self.btn_read.sizeHint().width(), self.btn_edit.sizeHint().width()),
-                max(self.btn_auto.sizeHint().width(), self.btn_freeze.sizeHint().width()),
-                max(self.btn_toggle.sizeHint().width(), self.btn_stop.sizeHint().width())]
-        need = sum(cols) + 2 * 5 + self.grip.sizeHint().width() + 5 + 20 + 40
-        self.setMinimumSize(max(PANEL_MIN.width(), need), PANEL_MIN.height() + 30)
+        self._apply_mode()
+        self._update_compact()
 
-    # --- tuerca ⚙: menú con las casillas ---
+    # --- aspecto: completo / mínimo ---
+    def mode(self) -> str:
+        return self._mode
+
+    def set_mode(self, mode: str):
+        mode = "minimal" if mode == "minimal" else "full"
+        if mode == self._mode:
+            return
+        self._mode = mode
+        self._hover = False
+        self._hover_timer.stop()
+        self._relayout()
+
+    def at_rest(self) -> bool:
+        """Mínimo y sin el mouse encima: solo estado y traducciones."""
+        return self._mode == "minimal" and not self._hover
+
+    def _apply_mode(self):
+        rest = self.at_rest()
+        self.toolbar.setVisible(not rest)
+        for w in (self.btn_merge, self.btn_copy, self.btn_clear, self.btn_gear, self.btn_close):
+            w.setVisible(not rest)
+        self.dots.setVisible(rest)
+
+    def _extra(self) -> int:
+        return HOVER_EXTRA if self._mode == "minimal" and self._hover else 0
+
+    def _base_size(self) -> QSize:
+        if self._user_size is not None:
+            return QSize(self._user_size)
+        return self.default_size(self._region if self._region.isValid() else QRect(0, 0, 700, 100))
+
+    def _relayout(self):
+        self._apply_mode()
+        if not self.isVisible():
+            return
+        if self._moved or not self._region.isValid():
+            size = self._base_size() + QSize(0, self._extra())
+            self._placing = True
+            try:
+                self.resize(size)
+                screen = QApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
+                if screen is not None:
+                    geo = screen.geometry()
+                    self.move(max(geo.left(), min(self.x(), geo.right() - self.width() + 1)),
+                              max(geo.top(), min(self.y(), geo.bottom() - self.height() + 1)))
+            finally:
+                self._placing = False
+        else:
+            self.place()
+
+    def _set_hover(self, on: bool):
+        if bool(on) != self._hover:
+            self._hover = bool(on)
+            self._relayout()
+
+    def _hover_check(self):
+        if self.busy():
+            self._hover_timer.start()
+            return
+        self._set_hover(False)
+
+    def _update_compact(self):
+        """Si las fichas de tecla no caben en la fila de botones, se quitan (los botones quedan solo con su texto)."""
+        avail = self.width() - 28
+        need = sum(b.full_width() for b in self.buttons) + 6 * (len(self.buttons) - 1) + 12
+        compact = need > avail
+        for b in self.buttons:
+            b.set_compact(compact)
+
+    def set_keys(self, keys: dict):
+        """Las teclas con el foco que se dibujan en las fichas de los botones (vacías = sin ficha)."""
+        for action, btn in (("read", self.btn_read), ("auto", self.btn_auto), ("text", self.btn_toggle),
+                            ("edit", self.btn_edit), ("freeze", self.btn_freeze), ("merge", self.btn_merge)):
+            btn.set_chip(str(keys.get(action, "")))
+        self._update_compact()
+
+    # --- tuerca ⚙: menú con los interruptores ---
     def set_options(self, model):
         if self.quick is not None:
             self.quick.deleteLater()
         self.quick = QuickOptions(model)
+        self.quick.set_font(self._px)
         self.quick.entered.connect(self._quick_timer.stop)
         self.quick.left.connect(self._quick_leave)
         self.quick.settings_requested.connect(self._quick_more)
         self.quick.settings_requested.connect(self.settings_requested)
+        self.quick.font_step.connect(self.font_step)
 
     def quick_visible(self) -> bool:
         return self.quick is not None and self.quick.isVisible()
@@ -781,6 +1389,13 @@ class LivePanel(QFrame):
                 return
             self.quick.hide()
             self.left.emit()                         # el panel puede plegarse / esconderse ahora
+            if self._mode == "minimal":
+                self._hover_timer.start()
+
+    def _set_pinned_look(self, on: bool):
+        self.btn_gear.setProperty("on", "true" if on else "false")
+        self.btn_gear.style().unpolish(self.btn_gear)
+        self.btn_gear.style().polish(self.btn_gear)
 
     def _gear_clicked(self):
         self._quick_pinned = not self._quick_pinned
@@ -788,19 +1403,23 @@ class LivePanel(QFrame):
             self._quick_open()
         elif self.quick is not None:
             self._quick_timer.start()
-        self.btn_gear.setStyleSheet("background: rgba(0,200,255,70);" if self._quick_pinned else "")
+        self._set_pinned_look(self._quick_pinned)
 
     def _quick_more(self):
         self._quick_pinned = False
-        self.btn_gear.setStyleSheet("")
+        self._set_pinned_look(False)
         if self.quick is not None:
             self.quick.hide()
 
     def hideEvent(self, e):
         self._quick_pinned = False
-        self.btn_gear.setStyleSheet("")
+        self._set_pinned_look(False)
+        self._hover_timer.stop()
         if self.quick is not None:
             self.quick.hide()
+        if self._hover:
+            self._hover = False
+            self._apply_mode()
         super().hideEvent(e)
 
     def set_user_size(self, size):
@@ -808,7 +1427,7 @@ class LivePanel(QFrame):
             and size.height() >= PANEL_MIN.height() else None
 
     def default_size(self, region: QRect) -> QSize:
-        return QSize(max(self.minimumWidth(), min(700, region.width())), 190)
+        return QSize(max(self.minimumWidth(), min(700, region.width())), DEFAULT_H[self._mode])
 
     def set_region(self, region: QRect):
         self._region = QRect(region)
@@ -820,7 +1439,7 @@ class LivePanel(QFrame):
             return
         screen = QApplication.screenAt(self._region.center()) or QApplication.primaryScreen()
         geo = screen.geometry() if screen is not None else QRect(0, 0, 1920, 1080)
-        size = self._user_size or self.default_size(self._region)
+        size = self._base_size() + QSize(0, self._extra())
         self._placing = True
         try:
             self.setGeometry(compute_panel_rect(self._region, size, geo))
@@ -829,73 +1448,69 @@ class LivePanel(QFrame):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
+        self.grip.move(self.width() - self.grip.width() - 1, self.height() - self.grip.height() - 1)
+        self._update_compact()
         if self.isVisible() and not self._placing:
-            self._user_size = self.size()
-            self.size_changed.emit(self.size())
+            self._user_size = QSize(self.width(), self.height() - self._extra())
+            self.size_changed.emit(self._user_size)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(255, 255, 255, 70), 1))
+        p.setBrush(PANEL_BG)
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
+        p.end()
 
     def keyPressEvent(self, e):
         self.key_pressed.emit(e.key(), int(e.modifiers()))
 
     def enterEvent(self, e):
+        self._hover_timer.stop()
+        if self._mode == "minimal":
+            self._set_hover(True)
         self.entered.emit()
         super().enterEvent(e)
 
     def leaveEvent(self, e):
+        if self._mode == "minimal":
+            self._hover_timer.start()
         self.left.emit()
         super().leaveEvent(e)
 
     def set_font_px(self, px: int):
         self._px = int(px)
         self.setStyleSheet(PANEL_STYLE.replace("%PX%", str(self._px)))
+        if self.quick is not None:
+            self.quick.set_font(self._px)
 
-    def _anchor(self, url):
-        text = url.toString()
-        if text.startswith("del:") and text[4:].isdigit():
-            self.entry_deleted.emit(int(text[4:]))
+    def font_px(self) -> int:
+        return self._px
 
     def set_entries(self, entries, show_original: bool, deletable: bool):
         """Muestra las entradas ([{id, original, translation}], la más nueva primero) con la más nueva ABAJO y destacada."""
-        rows = []
-        ordered = list(reversed(entries))
-        for i, e in enumerate(ordered):
-            latest = i == len(ordered) - 1
-            body = []
-            if show_original:
-                color, size = ("#9fb0c6", self._px - 2) if latest else ("#6f7a8a", self._px - 4)
-                body.append(f"<div style='color:{color}; font-size:{size}px'>"
-                            + _html.escape(e["original"]).replace("\n", "<br>") + "</div>")
-            tr = _html.escape(e["translation"]).replace("\n", "<br>") if e["translation"] else "<i style='color:#6f7a8a'>…</i>"
-            color, size = ("#d6f1ff", self._px + 1) if latest else ("#7fa3b8", self._px - 2)
-            body.append(f"<div style='color:{color}; font-size:{size}px'>{tr}</div>")
-            cross = ("<a href='del:%d' style='color:#8a93a3; text-decoration:none; font-size:%dpx'>&#10005;</a>" % (e["id"], self._px)
-                     if deletable else "")
-            bg = " bgcolor='#223247'" if latest else ""
-            pad = 8 if latest else 3
-            rows.append(f"<table width='100%' cellspacing='0' cellpadding='{pad}'{bg}><tr>"
-                        f"<td>{''.join(body)}</td>"
-                        f"<td width='34' align='center' valign='top'>{cross}</td></tr></table>")
-            if not latest:
-                rows.append("<div style='font-size:5px'>&nbsp;</div>")
-        if len(ordered) > 1:                        # más aire entre lo anterior y la lectura actual
-            rows.insert(len(rows) - 1, "<div style='font-size:10px'>&nbsp;</div><hr>")
-        self.view.setHtml("".join(rows))
-        bar = self.view.verticalScrollBar()
-        bar.setValue(bar.maximum())
+        self.view.set_entries(entries, show_original, deletable, self._px)
 
-    def set_note(self, note: str):
+    def set_note(self, note: str, tone: str = None):
         self._note = note
-        self._refresh_head()
+        if tone is None:
+            low = note.lower()
+            tone = ("busy" if any(w in low for w in ("leyendo", "traduciendo", "el texto cambia")) else
+                    "warn" if any(w in low for w in ("sin texto", "no se pudo", "falló", "error")) else "ok")
+        self.head.setText(note)
+        if self.head.property("tone") != tone:
+            self.head.setProperty("tone", tone)
+            self.head.style().unpolish(self.head)
+            self.head.style().polish(self.head)
+        self.dot.set_tone(tone)
 
     def set_merge(self, merge: bool):
         """Indica si las líneas partidas se están uniendo (tecla M)."""
         self._merge = bool(merge)
-        self._refresh_head()
-
-    def _refresh_head(self):
-        self.head.setText(f"{self._note}  ·  Líneas {'unidas' if self._merge else 'separadas'} (M)")
+        self.btn_merge.setText("Líneas unidas" if self._merge else "Líneas separadas")
 
     def mousePressEvent(self, e):
-        if e.button() == Qt.LeftButton and self.head.geometry().contains(e.pos()):
+        if e.button() == Qt.LeftButton and self.header.geometry().contains(e.pos()):
             self._drag = e.globalPos() - self.frameGeometry().topLeft()
         super().mousePressEvent(e)
 
@@ -913,11 +1528,12 @@ class LivePanel(QFrame):
 class PanelTab(QWidget):
     """La «viñeta»: una pestaña pequeña junto a la región; al pasar el mouse se abre el panel."""
     entered = pyqtSignal()
-    SIZE = QSize(124, 26)
+    SIZE = QSize(134, 28)
 
     def __init__(self):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFixedSize(self.SIZE)
         self._new = False
         self.setCursor(Qt.PointingHandCursor)
@@ -939,15 +1555,22 @@ class PanelTab(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        p.setPen(QPen(QColor(255, 255, 255, 80), 1))
-        p.setBrush(QColor(18, 20, 26, 235))
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 7, 7)
-        p.setPen(QColor(185, 230, 255) if self._new else QColor(154, 163, 178))
+        p.setPen(QPen(QColor(255, 255, 255, 90), 1))
+        p.setBrush(QColor(18, 20, 26, 240))
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(110, 205, 255) if self._new else QColor(110, 130, 150))
+        p.drawEllipse(QRectF(12, self.height() / 2 - 4, 8, 8))
+        p.setPen(QColor(185, 230, 255) if self._new else QColor(180, 190, 205))
         font = QFont(self.font())
         font.setPixelSize(13)
+        font.setBold(True)
         p.setFont(font)
-        p.drawText(self.rect(), Qt.AlignCenter, ("● " if self._new else "") + "Traducción ▾")
+        p.drawText(QRectF(26, 0, self.width() - 34, self.height()), Qt.AlignVCenter | Qt.AlignLeft, "Traducción ▾")
         p.end()
+
+
 
 
 class LiveMode(QObject):
@@ -980,6 +1603,7 @@ class LiveMode(QObject):
         self._force_freeze = False           # la lectura en curso la pidió «Congelar»: al terminar se congela
         self.panel = LivePanel()
         self.tab = PanelTab()
+        self.panel_mode = "full"             # «full» (completo), «minimal» o «tab» (viñeta)
         self.tab_mode = False                # el panel es una viñeta que se abre al pasar el mouse
         self._expanded = False               # (en modo viñeta) el panel está abierto
         self._collapse_timer = QTimer(self)
@@ -1032,6 +1656,8 @@ class LiveMode(QObject):
         self.panel.auto_requested.connect(self.toggle_auto)
         self.panel.freeze_requested.connect(self.toggle_freeze)
         self.panel.copy_requested.connect(self.copy_last)
+        self.panel.merge_requested.connect(self.toggle_merge)
+        self.panel.font_step.connect(self._font_step)
         self.panel.mode_bar.mode_requested.connect(self.win.set_ocr_mode)
         self.tab.entered.connect(self._expand)
         self.panel.set_options(self.options)
@@ -1068,10 +1694,12 @@ class LiveMode(QObject):
         self.freezer.clear()
         self._freeze_paused = False
         self._pause_game(False)                   # si la pantalla seguía congelada con el juego en pausa, se reanuda
-        self.panel.btn_freeze.setText("Congelar (F)")
+        self.panel.btn_freeze.setText("Congelar")
+        self.panel.btn_freeze.set_on(False)
         self.layer.set_editing(False)
         self.editing = False
-        self.panel.btn_edit.setText("Mover región (E)")
+        self.panel.btn_edit.setText("Región")
+        self.panel.btn_edit.set_on(False)
         self._compute_scale()
         screen = QApplication.screenAt(self.rect.center()) or QApplication.primaryScreen()
         self.layer.bounds = screen.geometry() if screen is not None else None
@@ -1209,6 +1837,8 @@ class LiveMode(QObject):
 
     def _render_panel(self):
         shown = self.history if self.keep_history else self.history[:1]
+        if self.panel.mode() == "minimal":
+            shown = shown[:2]                                          # el aspecto mínimo muestra solo las dos últimas
         self.panel.set_entries(shown, self.show_original, self.keep_history)
 
     def _new_entry(self, original: str):
@@ -1267,7 +1897,10 @@ class LiveMode(QObject):
                                   stable_ms=get_number(s, "live_stable_ms"), min_gap_ms=get_number(s, "live_min_gap_ms"))
         self.keys = load_keys(s, "live")
         self.panel.mode_bar.set_keys(self.keys)
-        tab = s.value("live_panel_tab", False) in (True, "true", "1", 1)
+        self.panel.set_keys(self.keys)
+        self.panel_mode = panel_mode(s)
+        self.panel.set_mode("minimal" if self.panel_mode == "minimal" else "full")
+        tab = self.panel_mode == "tab"
         if tab != self.tab_mode:
             self.tab_mode = tab
             self._expanded = False
@@ -1291,7 +1924,8 @@ class LiveMode(QObject):
         """Congela con `image` (el recorte leído) y, si hay `full`, toda la pantalla; o descongela con None.
         Primero se arregla lo que se ve y al final se pulsa la tecla de pausa: pase lo que pase con ella, la pantalla se descongela."""
         self.layer.set_frozen(image)
-        self.panel.btn_freeze.setText("Descongelar (F)" if image is not None else "Congelar (F)")
+        self.panel.btn_freeze.setText("Descongelar" if image is not None else "Congelar")
+        self.panel.btn_freeze.set_on(image is not None)
         if image is not None and full is not None and self.rect is not None:
             screen = QApplication.screenAt(self.rect.center()) or QApplication.primaryScreen()
             geo = screen.geometry()
@@ -1410,7 +2044,7 @@ class LiveMode(QObject):
         self._sync_toggle_text()
 
     def _sync_toggle_text(self):
-        self.panel.btn_toggle.setText("Quitar texto (O)" if self.text_visible else "Poner texto (O)")
+        self.panel.btn_toggle.set_on(self.text_visible)
         self.view_changed.emit()
 
     def toggle_merge(self):
@@ -1456,7 +2090,8 @@ class LiveMode(QObject):
         if on and (self.layer.frozen or self.freezer.isVisible() or self._freeze_paused):
             self._set_frozen(None)                 # no se mueve la región sobre una pantalla congelada (y el juego sigue)
         self._sync_pause()
-        self.panel.btn_edit.setText("Terminar edición (E)" if on else "Mover región (E)")
+        self.panel.btn_edit.setText("Terminar" if on else "Región")
+        self.panel.btn_edit.set_on(on)
         self.panel.set_note("En vivo · editando la región: arrastra dentro para moverla o los bordes para estirarla"
                             if on else "En vivo · región actualizada")
         if on:
@@ -1489,7 +2124,7 @@ class LiveMode(QObject):
             if self.panel.mode_bar._available:
                 self.win.set_ocr_mode(action[5:])
             return
-        {"stop": self.stop, "panel": self.toggle_panel, "text": self.toggle_text, "merge": self.toggle_merge,
+        {"read": self.read_now, "stop": self.stop, "panel": self.toggle_panel, "text": self.toggle_text, "merge": self.toggle_merge,
          "edit": self.toggle_edit, "auto": self.toggle_auto, "freeze": self.toggle_freeze}.get(action, lambda: None)()
 
     # --- elegir otra región: se esconde todo para que no salga en la captura congelada ---
@@ -1709,7 +2344,7 @@ class LiveMode(QObject):
 
     def failed(self, msg: str):
         if self.inflight:
-            self.panel.set_note(f"En vivo · {msg}")
+            self.panel.set_note(f"En vivo · {msg}", "warn")
 
     def refresh_marks(self):
         text = self.layer.text
@@ -1718,6 +2353,20 @@ class LiveMode(QObject):
 
     def _word_clicked(self, word, compound, start, text):
         self.win.words.click(word, compound, text, start, self.win._merge_used)
+
+    def _font_step(self, delta: int):
+        """A− / A+ del menú ⚙: cambia la letra del panel (el mismo ajuste de Configuración ▸ Apariencia)."""
+        s = self.win.settings
+        _d, lo, hi = NUMBERS["live_panel_font"]
+        cur = get_number(s, "live_panel_font")
+        new = max(lo, min(hi, cur + (1 if delta > 0 else -1) * (1 if cur < 20 else 2)))
+        if new == cur:
+            return
+        s.setValue("live_panel_font", new)
+        self.apply_settings()
+        page = getattr(self.win, "settings_dialog", None)
+        if page is not None and hasattr(page, "reload_numbers"):
+            page.reload_numbers()
 
     def _save_size(self, size):
         self.win.settings.setValue("live_panel_size", size)
