@@ -3,6 +3,7 @@ venv
 DB/data/*.db
 DB/data/nltk_data/
 DB/data/jiten_freq_*.zip
+!DB/data/levels_ja.db
 Cards/data/
 __pycache__
 Tests

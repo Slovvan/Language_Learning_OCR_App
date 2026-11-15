@@ -13,7 +13,7 @@ Todo corre en tu PC: sin cuentas, sin API de pago y pensado para gastar poco CPU
 | Inglés | Español | WordNet + Open Multilingual WordNet |
 | Francés | Español | WikDict/FreeDict (Wiktionary) + WordNet |
 
-![Panel de traducción en vivo](docs/img/panel.png)
+![Panel de traducción en vivo](/img/panel.png)
 
 ## Qué hace
 
@@ -40,9 +40,9 @@ Todo corre en tu PC: sin cuentas, sin API de pago y pensado para gastar poco CPU
 
 | Palabra al pasar el mouse | Tarjetas (vista previa) |
 |---|---|
-| ![Ventanita del diccionario](docs/img/popup.png) | ![Tarjetas](docs/img/tarjetas.png) |
+| ![Ventanita del diccionario](/img/popup.png) | ![Tarjetas](/img/tarjetas.png) |
 
-![Registro de frases](docs/img/registro.png)
+![Registro de frases](/img/registro.png)
 
 ## Requisitos
 
@@ -63,13 +63,17 @@ python -m venv .venv
 python -m pip install -r requirements
 ```
 
-### 1. Los diccionarios (`DB/data/*.db`)
+### 1. Diccionarios y datos de japonés
 
-Los diccionarios no están en el repositorio (pesan decenas de MB y son datos derivados de otras obras).
+Las bases principales de significados —`DB/data/dictionary.db`, `DB/data/dictionary_ja.db` y
+`DB/data/dictionary_fr.db`— no están en el repositorio. Debes generarlas (ver [Generar los datos](#generar-los-datos)).
 
-- **Generarlos tú** (una sola vez cada uno; ver [Generar los datos](#generar-los-datos)).
+`DB/data/levels_ja.db` sí está incluido. Es una base auxiliar: añade los niveles JLPT y las frecuencias al diccionario
+japonés, pero **no sustituye** a `dictionary_ja.db`. Con la base incluida no hace falta descargar los ZIP de jiten
+para usar las frecuencias que ya contiene. Si falta `levels_ja.db`, la app sigue funcionando, pero no muestra esas
+etiquetas.
 
-Sin diccionario la app funciona, pero avisa de que no encuentra el diccionario y no enseña significados.
+Sin una de las bases principales, la app avisa de que no encuentra ese diccionario y no muestra sus significados.
 
 ### 2. Los modelos (automático)
 
@@ -130,7 +134,7 @@ se activan o desactivan con un interruptor (activadas de fábrica):
 - **Números en cifras**: el modelo falla con los numerales en kanji. `千五百円` → `1,500円`, `三月十五日` → `3月15日`,
   `二・五パーセント` → `2.5パーセント`. Palabras como 一緒, 十分 (bastante), 三日月 o 万一 no se tocan.
 
-![Configuración ▸ Traducción](docs/img/configuracion.png)
+![Configuración ▸ Traducción](/img/configuracion.png)
 
 Para medir el efecto con tu modelo real, desde la raíz del proyecto ejecuta
 `python -m Tests.probar_reglas_ja Tests\frases_ja_numeros.txt` (o cambia el archivo por
@@ -172,7 +176,7 @@ Pestañas: **Atajos · Captura congelada · Modo en vivo · Traducción · Apari
 momento. Los **perfiles** recuerdan, por juego, la región, el idioma, el modo de OCR, las opciones del modo en vivo y la
 tecla de pausa.
 
-![Configuración](docs/img/configuracion.png)
+![Configuración](/img/configuracion2.png)
 
 ## Generar los datos
 
@@ -184,19 +188,27 @@ módulo `DB`, ejecútalos con `python -m DB.<script>`:
 | `DB/data/dictionary.db` (inglés) | `python -m DB.build_dictionary` | WordNet 3.0 + Open Multilingual WordNet (descarga ~40 MB a `DB/data/nltk_data/`; 1–3 min) |
 | `DB/data/dictionary_ja.db` (japonés) | `python -m DB.build_dictionary_ja` | JMdict (`jmdict-simplified`); ~500 MB de RAM, 1–2 min. Con `--file DB\data\jmdict-eng-….json` usa un JSON ya descargado |
 | `DB/data/dictionary_fr.db` (francés) | `python -m DB.build_dictionary_fr` | FreeDict/WikDict `fra-spa` (`fra-spa.index` y `fra-spa.dict.dz` en `DB/data/fr_source/`) + WordNet/OMW |
-| `DB/data/levels_ja.db` (niveles) | `python -m DB.build_levels_ja` | JLPT (incluido en `DB/data/jlpt_vocab_ALL.json`) y, opcional, frecuencias de [jiten.moe](https://jiten.moe/frequency-dictionaries) |
+| `DB/data/levels_ja.db` (JLPT y frecuencias japonesas) | `python -m DB.build_levels_ja` | JLPT (incluido en `DB/data/jlpt_vocab_ALL.json`); las frecuencias de [jiten.moe](https://jiten.moe/frequency-dictionaries) son opcionales al generar la base |
 
-Frecuencias de jiten (opcional): en cada fila de esa página baja la versión «Yomitan» (`.zip`, no lo descomprimas) y
-ejecuta, por ejemplo:
+#### Frecuencias de jiten (solo para crear o actualizar la base)
+
+Si usas el `levels_ja.db` incluido, puedes saltarte esta sección: **no necesitas descargar las listas de jiten**.
+Descárgalas únicamente si vas a crear una base propia o actualizar sus frecuencias. En cada fila de la página de jiten,
+baja la versión «Yomitan» (`.zip`, no la descomprimas), guárdala en `DB/data/` y ejecuta el generador con todas las
+listas que quieras incluir.
+Por ejemplo, este comando carga videojuegos, anime, novelas visuales, dramas y la lista global:
 
 ```powershell
 python -m DB.build_levels_ja game=DB\data\jiten_freq_VideoGame.zip anime=DB\data\jiten_freq_Anime.zip vn=DB\data\jiten_freq_VisualNovel.zip drama=DB\data\jiten_freq_Drama.zip global=DB\data\jiten_freq_global.zip
 ```
 
-Cada ejecución solo reemplaza las listas que le das y conserva las que ya estaban cargadas.
+El generador **reconstruye `levels_ja.db` desde cero** en cada ejecución. Si quieres conservar frecuencias de una
+ejecución anterior, vuelve a pasar también sus ZIP; las listas omitidas no se copian a la nueva base. Si ejecutas el
+comando sin listas de jiten, la base resultante tendrá los niveles JLPT, pero no las frecuencias.
 
-Archivos de datos que **sí** vienen en el repositorio: `DB/data/grammar_ja.tsv` (patrones de gramática),
-`DB/data/fr_extra.tsv` (palabras extra del francés), `DB/data/glosario_semilla_ja.tsv`,
+Archivos de datos que **sí** vienen en el repositorio: `DB/data/levels_ja.db` (niveles JLPT y frecuencias de jiten.moe),
+`DB/data/grammar_ja.tsv` (patrones de gramática), `DB/data/fr_extra.tsv` (palabras extra del francés),
+`DB/data/glosario_semilla_ja.tsv`,
 `DB/data/jlpt_vocab_ALL.json` y los `DB/data/CREDITS_*.txt`.
 
 ## Tus datos y privacidad
@@ -220,7 +232,7 @@ Archivos de datos que **sí** vienen en el repositorio: `DB/data/grammar_ja.tsv`
 
 ## Problemas frecuentes
 
-- **«Diccionario no encontrado»**: falta el `.db` de ese idioma; descárgalo de *Releases* o genera `DB/data/dictionary*.db`.
+- **«Diccionario no encontrado»**: falta el `.db` de ese idioma, genera `DB/data/dictionary*.db`.
 - **El atajo global no funciona**: instala `pynput` (`pip install pynput`) y evita combinaciones que use otro programa; puedes
   cambiarlo en Configuración ▸ Atajos.
 - **🔊 no suena o avisa de que no hay voz**: instala la voz del idioma en Windows (ver *Voz*). La primera vez de cada texto
