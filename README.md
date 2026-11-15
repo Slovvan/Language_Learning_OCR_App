@@ -13,16 +13,16 @@ Todo corre en tu PC: sin cuentas, sin API de pago y pensado para gastar poco CPU
 | Inglés | Español | WordNet + Open Multilingual WordNet |
 | Francés | Español | WikDict/FreeDict (Wiktionary) + WordNet |
 
-![Panel de traducción en vivo](/img/panel.png)
-
 ## Qué hace
 
 - **Dos formas de capturar**
   - **Captura congelada**: congela la pantalla, eliges una región y el texto reconocido se dibuja encima del
     original; el juego (o la cinemática) puede seguir sin que cambie lo que lees.
+    ![Panel de traducción en vivo](/img/frozen.png)
   - **Modo en vivo**: vigila una región fija y lee el texto cuando cambia (lectura automática cuando el texto
     se queda quieto, para no leer a medias el texto que sale letra a letra). Panel de traducción con tres aspectos
     (completo, mínimo y viñeta) y opción de pulsar la tecla de pausa del juego al congelar.
+    ![Panel de traducción en vivo](/img/live.png)
 - **Diccionario bajo el mouse**: deja quieto el mouse sobre una palabra del texto y aparece su significado, lectura,
   nivel JLPT, frecuencias por tipo de medio (anime, videojuegos, novelas visuales…) y patrones de gramática.
   Clic para guardar la palabra; las que ya guardaste salen marcadas.
@@ -31,18 +31,17 @@ Todo corre en tu PC: sin cuentas, sin API de pago y pensado para gastar poco CPU
   *reglas del japonés* opcionales (punto final inteligente y números en cifras) que mejoran la traducción.
 - **Tarjetas y Anki**: cada idioma tiene su lista de palabras. Exporta a `.txt` o a un paquete `.apkg`, con el
   **audio de la palabra y de la frase** si quieres.
+![Panel de traducción en vivo](/img/cards.png)
 - **Voz**: botón 🔊 para escuchar palabras y frases con las voces que ya trae Windows (sin internet).
 - **Registro** de todas las frases leídas, con filtros, búsqueda y exportación a `.txt` / `.csv`.
+![Panel de traducción en vivo](/img/log.png)
 - **Glosario / Pendientes**: las palabras sin significado se apartan para rellenarlas a mano (o en una hoja de
   cálculo) y pasar a tarjeta.
+![Panel de traducción en vivo](/img/glosario.png)
 - **Perfiles por juego**: región, idioma, modo de OCR, opciones del modo en vivo y tecla de pausa por juego.
+![Panel de traducción en vivo](/img/perfil.png)
 - La propia app **no sale en las capturas** (Windows 10 2004 o superior), así que el OCR no lee su interfaz.
 
-| Palabra al pasar el mouse | Tarjetas (vista previa) |
-|---|---|
-| ![Ventanita del diccionario](/img/popup.png) | ![Tarjetas](/img/tarjetas.png) |
-
-![Registro de frases](/img/registro.png)
 
 ## Requisitos
 
@@ -176,7 +175,7 @@ Pestañas: **Atajos · Captura congelada · Modo en vivo · Traducción · Apari
 momento. Los **perfiles** recuerdan, por juego, la región, el idioma, el modo de OCR, las opciones del modo en vivo y la
 tecla de pausa.
 
-![Configuración](/img/configuracion2.png)
+![Configuración](/img/configuracion3.png)
 
 ## Generar los datos
 
