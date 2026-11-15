@@ -1,0 +1,6 @@
+Nivel JLPT: lista de vocabulario de Jonathan Waller (https://www.tanos.co.uk/jlpt/), licencia Creative Commons BY,
+en el formato JSON de Bluskyo (https://github.com/Bluskyo/JLPT_Vocabulary, MIT).
+Aviso: no es una lista oficial; el JLPT no publica vocabulario por nivel desde 2010.
+
+Frecuencias: jiten.moe, CC BY-SA 4.0
+(https://jiten.moe/frequency-dictionaries), que usa datos de JMdict/EDRDG.

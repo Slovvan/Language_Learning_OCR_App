@@ -19,9 +19,11 @@ import csv
 import hashlib
 import html
 import re
+import shutil
 from pathlib import Path
 
 from DB.levels_ja import fine_band
+import UI.speech as speech
 
 TAG = "OCR_Translator"
 FIELDS = ["Word", "Meaning", "Sentence", "SentenceTranslation", "Extra"]      # inglés (compatibilidad)
@@ -113,14 +115,36 @@ def sentence_html(card) -> str:
     return _esc(text)
 
 
-def card_fields(card, lang=None) -> list:
-    """Los campos de la nota, ya en HTML, en el orden del perfil del idioma."""
+def audio_texts(cards, lang=None) -> list:
+    """Los textos (palabra y frase de cada tarjeta, sin repetidos) cuyo audio se puede adjuntar."""
+    out = []
+    for card in cards:
+        code = lang or getattr(card, "lang", "") or "en"
+        out.extend(t for t in speech.card_texts(card, code) if t)
+    return list(dict.fromkeys(out))
+
+
+def card_fields(card, lang=None, sounds=None) -> list:
+    """Los campos de la nota, ya en HTML, en el orden del perfil del idioma.
+
+    `sounds`: {texto limpio: nombre de archivo} de los audios. La etiqueta [sound:…] va dentro de campos que ya existen (así
+    el tipo de nota no cambia y reimportar actualiza las notas): el audio de la palabra en «Reading» (japonés) o en
+    «Meaning» (inglés, francés) y el de la frase al final de «Sentence». La palabra (primera columna) nunca se toca.
+    """
     prof = profile_for([card], lang)
     values = {
         "Word": _html(card.word), "Reading": _html(getattr(card, "reading", "")),
         "Meaning": _html(card.meaning), "Sentence": sentence_html(card),
         "SentenceTranslation": _html(card.sentence_es), "Extra": _html(card.extra),
     }
+    if sounds:
+        word_text, sentence_text = speech.card_texts(card, lang or getattr(card, "lang", "") or "en")
+        if sounds.get(word_text):
+            field = "Reading" if "Reading" in prof["fields"] else "Meaning"
+            tag = f"[sound:{sounds[word_text]}]"
+            values[field] = (values[field] + ("<br>" if field == "Meaning" and values[field] else " " if values[field] else "")) + tag
+        if sentence_text and sounds.get(sentence_text) and values["Sentence"]:
+            values["Sentence"] += f" [sound:{sounds[sentence_text]}]"
     return [values[name] for name in prof["fields"]]
 
 
@@ -151,23 +175,36 @@ def note_guid(card, lang=None) -> str:
     return hashlib.sha1(f"{prefix}{card.key}".encode("utf-8")).hexdigest()[:10]
 
 
-def export_tsv(cards, path, lang=None) -> int:
-    """Escribe un archivo de texto para importar en Anki. Devuelve cuántas tarjetas escribió."""
+def export_tsv(cards, path, lang=None, audio=None) -> int:
+    """Escribe un archivo de texto para importar en Anki. Devuelve cuántas tarjetas escribió.
+
+    `audio`: {texto limpio: ruta del archivo de sonido}. Los archivos se copian a una carpeta «<nombre>_audio» junto al
+    .txt: hay que pasarlos a la carpeta collection.media de Anki (el .apkg los lleva dentro y no hace falta)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     cards = list(cards)
     prof = profile_for(cards, lang)
+    sounds = _names(audio)
+    if audio:
+        folder = path.with_name(path.stem + "_audio")
+        folder.mkdir(parents=True, exist_ok=True)
+        for src in set(map(str, audio.values())):
+            shutil.copyfile(src, folder / Path(src).name)
     with open(path, "w", encoding="utf-8", newline="") as f:
         # Cabeceras de Anki (2.1.54 o posterior): separador, HTML permitido y columna de etiquetas.
         f.write(f"#separator:tab\n#html:true\n#tags column:{len(prof['fields']) + 1}\n")
         writer = csv.writer(f, delimiter="\t", quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
         for card in cards:
-            writer.writerow(card_fields(card, lang) + [" ".join(anki_tags(card))])
+            writer.writerow(card_fields(card, lang, sounds) + [" ".join(anki_tags(card))])
     return len(cards)
 
 
-def export_apkg(cards, path, lang=None) -> int:
-    """Escribe un paquete .apkg. Lanza ImportError si falta genanki."""
+def _names(audio) -> dict:
+    return {t: Path(p).name for t, p in (audio or {}).items()}
+
+
+def export_apkg(cards, path, lang=None, audio=None) -> int:
+    """Escribe un paquete .apkg (con los sonidos de `audio` dentro). Lanza ImportError si falta genanki."""
     import genanki  # import tardío: es opcional
 
     cards = list(cards)
@@ -179,10 +216,13 @@ def export_apkg(cards, path, lang=None) -> int:
         css=CSS,
     )
     deck = genanki.Deck(prof["deck_id"], prof["deck_name"])
+    sounds = _names(audio)
     for card in cards:
-        deck.add_note(genanki.Note(model=model, fields=card_fields(card, lang),
+        deck.add_note(genanki.Note(model=model, fields=card_fields(card, lang, sounds),
                                    tags=anki_tags(card), guid=note_guid(card, lang)))
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    genanki.Package(deck).write_to_file(str(path))
+    package = genanki.Package(deck)
+    package.media_files = sorted(set(map(str, (audio or {}).values())))
+    package.write_to_file(str(path))
     return len(cards)

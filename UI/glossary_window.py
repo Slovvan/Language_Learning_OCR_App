@@ -18,8 +18,11 @@ from PyQt5.QtWidgets import (QAbstractItemView, QBoxLayout, QCheckBox, QComboBox
                              QVBoxLayout, QWidget)
 
 import Translator.languages as languages
-from UI.cards_window import (ACCENT, MUTED, ROLE_ID, ROLE_JA, ROLE_SIDE, TEXT, CardPreview, _CardList, _RowDelegate,                     _SearchBox)
+from UI.cards_window import (ACCENT, MUTED, ROLE_ID, ROLE_JA, ROLE_SIDE, TEXT, CardPreview, _CardList, _RowDelegate,
+                          _SearchBox)
+import UI.speech as speech
 from UI.main_ui import confirm, set_prop
+from UI.speech import SpeakButton
 
 EXPORT_DIR = Path(__file__).resolve().parent / "exports"
 ROLE_SUB, ROLE_PENDING, ROLE_CARD = Qt.UserRole + 3, Qt.UserRole + 4, Qt.UserRole + 5
@@ -92,6 +95,7 @@ class GlossaryPage(QWidget):
     Emite `changed` cuando algo cambia (marcas y contadores de la ventana principal)."""
 
     changed = pyqtSignal()
+    speak_requested = pyqtSignal(str)             # 🔊 de la vista previa o del editor: texto a leer
 
     def __init__(self, glossary, key_for, parent=None, make_card=None, has_card=None, settings=None, preview_card=None):
         super().__init__(parent)
@@ -233,6 +237,9 @@ class GlossaryPage(QWidget):
         self.search.textChanged.connect(lambda _t: self._refill(set(self.selected_ids())))
         self.list.itemSelectionChanged.connect(self._on_selection)
         self.list.delete_pressed.connect(self.delete_selected)
+        self.preview.speak_requested.connect(self.speak_requested)
+        self.btn_ed_word.clicked.connect(lambda: self._speak_editor("word"))
+        self.btn_ed_sentence.clicked.connect(lambda: self._speak_editor("sentence"))
         self.btn_preview.clicked.connect(lambda: self.set_mode("preview"))
         self.btn_edit.clicked.connect(lambda: self.set_mode("edit"))
         self.btn_back.clicked.connect(lambda: self.set_mode("preview"))
@@ -268,6 +275,8 @@ class GlossaryPage(QWidget):
         self.ed_sentence_es.setPlaceholderText("Traducción de la frase (se rellena sola al pulsar la palabra)")
         self.cap_word, self.cap_reading = caption("PALABRA", 0), caption("LECTURA", 0)
         self.cap_meaning, self.cap_sentence, self.cap_sentence_es = caption("SIGNIFICADO"), caption("FRASE"), caption("TRADUCCIÓN")
+        self.btn_ed_word = SpeakButton("Escuchar la palabra", (24, 24))
+        self.btn_ed_sentence = SpeakButton("Escuchar la frase original", (24, 24))
         self.ok = QLabel("✓ Se guarda solo")
         self.ok.setObjectName("ok")
         self.btn_back = QPushButton("Vista previa")
@@ -280,13 +289,26 @@ class GlossaryPage(QWidget):
         grid.setContentsMargins(20, 16, 20, 14)
         grid.setHorizontalSpacing(14)
         grid.setVerticalSpacing(4)
-        grid.addWidget(self.cap_word, 0, 0)
+        word_head = QHBoxLayout()
+        word_head.setContentsMargins(0, 0, 0, 0)
+        word_head.addWidget(self.cap_word)
+        word_head.addStretch(1)
+        word_head.addWidget(self.btn_ed_word)
+        grid.addLayout(word_head, 0, 0)
         grid.addWidget(self.cap_reading, 0, 1)
         grid.addWidget(self.ed_word, 1, 0)
         grid.addWidget(self.ed_reading, 1, 1)
         for row, (cap, ed) in enumerate(((self.cap_meaning, self.ed_meaning), (self.cap_sentence, self.ed_sentence),
                                          (self.cap_sentence_es, self.ed_sentence_es)), start=2):
-            grid.addWidget(cap, row * 2 - 2, 0, 1, 2)
+            if cap is self.cap_sentence:
+                head = QHBoxLayout()
+                head.setContentsMargins(0, 0, 0, 0)
+                head.addWidget(cap)
+                head.addStretch(1)
+                head.addWidget(self.btn_ed_sentence)
+                grid.addLayout(head, row * 2 - 2, 0, 1, 2)
+            else:
+                grid.addWidget(cap, row * 2 - 2, 0, 1, 2)
             grid.addWidget(ed, row * 2 - 1, 0, 1, 2)
         grid.setRowStretch(3, 1)
         grid.setRowStretch(5, 1)
@@ -309,6 +331,16 @@ class GlossaryPage(QWidget):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setWidget(host)
         return scroll
+
+    def _speak_editor(self, which: str):
+        """🔊 del editor: lee lo que hay escrito ahora en la palabra (en japonés, su lectura) o en la frase."""
+        if which == "word":
+            text = (self.ed_reading.text().strip() or self.ed_word.text()) if self.lang == "ja" else self.ed_word.text()
+        else:
+            text = self.ed_sentence.toPlainText()
+        text = speech.clean_text(text, self.lang)
+        if text:
+            self.speak_requested.emit(text)
 
     STRIP_WIDE = 470        # por debajo, la casilla va sobre el botón
 

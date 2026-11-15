@@ -179,7 +179,7 @@ def _grammar_html(entry) -> str:
     """Forma gramatical: una caja morada con el patrón, su significado, nivel y un ejemplo."""
     esc = html.escape
     s = entry.senses[0] if entry.senses else None
-    inner = (f"<span style='font-size:11px; color:{GRAM_LABEL}; letter-spacing:1px'><b>GRAMÁTICA</b></span><br>"
+    inner = (f"<span style='font-size:11px; color:{GRAM_LABEL}; letter-spacing:1px'><b>Grammar</b></span><br>"
              f"<span style='font-size:{READING_PX - 4}px; font-weight:600; color:{GRAM}'>{esc(entry.lemma)}</span>")
     if s is not None and s.definition:
         inner += f" <span style='font-size:{MEANING_PX - 2}px; color:{GRAM_TEXT}'>&nbsp;{esc(s.definition)}</span>"

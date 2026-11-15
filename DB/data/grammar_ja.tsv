@@ -1,0 +1,211 @@
+# Japanese forms and contractions. Editable: save the file and the app will reload it automatically.
+# Columns: Pattern, Match (see the beginning of ja_grammar.py), Meaning, Attaches to, Register, Example, Translation, Level, Notes.
+Pattern	Match	Meaning	Attaches to	Register	Example	Translation	Level	Notes
+〜ます	@V =ます	Polite present / future (affirmative)	verb stem (連用形)	polite	毎日ゲームをします。	I play games every day.	N5	
+〜ません	@V =ませ =ん	Polite negative	verb stem	polite	ここでは食べません。	I don't eat here.	N5	
+〜ました	@V =まし =た	Polite past	verb stem	polite	宝箱を開けました。	I opened the chest.	N5	
+〜ませんでした	@V =ませ =ん =でし =た	Polite past negative	verb stem	polite	何も見つかりませんでした。	I found nothing.	N5	
+〜ましょう	@V =ましょう	Polite volitional: let's… / shall we…	verb stem	polite	一緒に行きましょう。	Let's go together.	N5	
+〜ませ	@V =ませ	Polite imperative / invitation (always with ん dropped)	verb stem	polite / shop talk	いらっしゃいませ。	Welcome!		Mainly appears in set phrases (いらっしゃいませ, お待ちください).
+〜まして	@V =まし =て	Polite te-form: connects clauses politely	verb stem	polite / formal	遅くなりまして、すみません。	I'm sorry for being late.	N5	
+〜て / 〜で (te-form)	@VAX =て|=で	Connective form: and, then, because; also the base for requests and many auxiliaries	verb / adjective		扉を開けて進む。	Open the door and go on.	N5	
+〜た / 〜だ (past)	@VAX =た|=だ	Plain past (or completed state)	verb / adjective	plain	敵を倒した。	I defeated the enemy.	N5	
+〜たり / 〜だり	@VAX =たり|=だり	Lists actions as examples: doing things like A and B	verb / adjective		食べたり飲んだりする。	I eat and drink and so on.	N4	
+〜ない	@VAX =ない	Plain negative	verb / adjective	plain	ここでは使わない。	I don't use it here.	N5	
+〜なかった	@VAX =なかっ =た	Plain past negative	verb / adjective	plain	何も見えなかった。	I couldn't see anything.	N5	
+〜なく (て)	@VAX =なく	Adverbial negative: without doing / not doing and…	verb / adjective		迷わなくてもいい。	You don't have to hesitate.	N4	
+〜ず / 〜ずに	@V =ず =に ; @V =ず	Without doing (formal negative)	verb (not する → せず)	formal / literary	何も言わずに去った。	He left without saying anything.	N3	
+〜ぬ (archaic negative)	@V =ぬ	Archaic / literary negative	verb	archaic	知らぬが仏。	Ignorance is bliss.	N1	
+〜ん (casual negative)	@V =ん:助動詞	Casual or dialect contraction of ない / ぬ	verb	casual / dialect	そんなの分からん。	I don't get that.		Very common in Kansai and in masculine speech.
+〜られる (potential / passive)	@V =られる|=られ	Can do (ichidan) / be done to; also honorific	ichidan verb stem		ここから出られない。	I can't get out of here.	N4	For Group 1 verbs, the potential form is 〜える (行ける), and it is not split into separate pieces.
+〜れる (passive)	@V =れる|=れ	Passive: be done to; also honorific	godan verb (mizenkei)		敵に倒される。	I'm defeated by the enemy.	N4	
+〜させる / 〜せる (causative)	@V させる|せる	Make / let someone do	verb		仲間に待たせる。	I make my friend wait.	N4	
+〜させられる (causative-passive)	@V させる|せる られる	Be made to do	verb		毎日走らせられた。	I was made to run every day.	N3	
+〜(よ)う (volitional)	+よう|+こう|+そう|+とう|+のう|+ぼう|+もう|+ろう|+ごう|+おう:動詞	Let's… / I will… / I'm going to…	verb	plain	そろそろ行こう。	Let's get going.	N4	
+〜ば (conditional)	@VAX =ば	If… (general or hypothetical condition)	verb / adjective (ba-form)		急げば間に合う。	If you hurry, you'll make it.	N4	
+〜たら / 〜だら	@VAX =たら|=だら	If / when… (past-based condition)	verb / adjective		着いたら連絡する。	I'll call when I arrive.	N4	
+〜ろ (imperative)	+ろ	Plain imperative for ichidan verbs: do it!	ichidan verb	blunt / masculine	早く逃げろ。	Run away, quick!	N4	
+〜なさい	@V なさい	Soft command: do (it)	verb stem	parent to child / teacher	早く寝なさい。	Go to sleep now.	N4	
+〜たい	@V たい	Want to do	verb stem	plain	もっと強くなりたい。	I want to get stronger.	N5	
+〜たくない	@V =たく =ない	Don't want to do	verb stem	plain	もう戦いたくない。	I don't want to fight any more.	N5	
+〜たかった	@V =たかっ =た	Wanted to do	verb stem	plain	会いたかった。	I wanted to see you.	N5	
+〜たくなかった	@V =たく =なかっ =た	Didn't want to do	verb stem	plain	行きたくなかった。	I didn't want to go.	N5	
+〜たがる	@V たがる	Shows desire (third person): wants to do	verb stem	plain	彼は行きたがる。	He wants to go.	N3	
+〜く (adverbial)	+く:形容詞	Adverbial form of an i-adjective; also links clauses	i-adjective		強く戦う。	Fight hard.	N5	
+〜かった (past)	+かっ:形容詞 =た	Past of an i-adjective	i-adjective	plain	昨日は寒かった。	It was cold yesterday.	N5	
+〜くない	+く:形容詞 ない	Negative of an i-adjective	i-adjective	plain	この剣は高くない。	This sword isn't expensive.	N5	
+〜くなかった	+く:形容詞 ない =た	Past negative of an i-adjective	i-adjective	plain	昨日は寒くなかった。	It wasn't cold yesterday.	N5	
+〜ければ	+けれ:形容詞 =ば	If it is… (conditional of an i-adjective)	i-adjective		安ければ買う。	If it's cheap, I'll buy it.	N4	
+〜だ / 〜です	@NS =だ|=です	Copula: to be (plain / polite)	noun / na-adjective	plain / polite	ここは危険だ。	This place is dangerous.	N5	
+〜だった / 〜でした	@NS だっ =た ; @NS でし =た	Copula, past	noun / na-adjective	plain / polite	昔は平和だった。	It used to be peaceful.	N5	
+〜ではない / 〜じゃない	@NS =で =は ない ; @NS =じゃ ない	Copula, negative: is not	noun / na-adjective	plain; じゃ is casual	敵じゃない。	He isn't an enemy.	N5	
+〜ではありません / 〜じゃないです	@NS =で =は =あり =ませ =ん ; @NS =じゃ =ない =です	Copula, polite negative	noun / na-adjective	polite	危険ではありません。	It isn't dangerous.	N5	
+〜である	@NS =で =ある|=あり|=あれ	Written / formal copula (is)	noun / na-adjective	written / literary	これは事実である。	This is a fact.	N3	
+〜ている	@VAX =て|=で いる	Ongoing action or resulting state	verb (te-form)		敵が近づいている。	The enemy is approaching.	N5	
+〜ていた	@VAX =て|=で いる =た	Past progressive / state: was doing	verb (te-form)		ずっと待っていた。	I was waiting all along.	N5	
+〜ていない	@VAX =て|=で いる ない	Not doing / hasn't done yet	verb (te-form)		まだ食べていない。	I haven't eaten yet.	N5	
+〜てる (contracted ている)	@VAX =てる|=でる	Contraction of ている	verb (te-form)	casual	何してるの？	What are you doing?	N4	
+〜ておく / 〜とく	@VAX =て|=で おく ; @VAX =とく|=どく	Do in advance / leave as is	verb (te-form)	とく is casual	準備しておく。	I'll get ready in advance.	N4	
+〜てある	@VAX =て|=で ある	State resulting from someone's deliberate action	transitive verb (te-form)		扉が開けてある。	The door has been left open.	N4	
+〜てしまう	@VAX =て|=で しまう	Do completely / do by accident (with regret)	verb (te-form)		全部食べてしまった。	I ate it all.	N4	
+〜ちゃう / 〜じゃう	@VAX ちゃう|じゃう|ちまう|じまう	Contraction of てしまう / でしまう	verb (te-form)	casual	忘れちゃった。	I forgot (oops).	N4	
+〜てみる	@VAX =て|=で みる	Try doing	verb (te-form)		一度やってみる。	I'll try it once.	N4	
+〜ながら	@V =ながら	While doing	verb stem		歩きながら話す。	Talk while walking.	N4	
+〜やすい	@V やすい	Easy to do	verb stem		このゲームは遊びやすい。	This game is easy to play.	N4	
+〜にくい	@V にくい	Hard to do	verb stem		この道は歩きにくい。	This road is hard to walk on.	N4	
+〜すぎる / 〜すぎ	~すぎる:動詞 ; ~すぎ:名詞 ; @VA すぎる|=すぎ	Too much / overdoing	verb stem / adjective stem		食べすぎる。	I eat too much.	N4	
+〜そう (appearance)	@VA =そう	Looks like / seems about to	verb stem / adjective stem		美味しそうだ。	That looks tasty.	N4	
+〜んだ / 〜んです	@VAX =ん:助詞 =だ|=です	Explanatory のだ: it's that… / you see…	plain form	casual / polite	行くんだ。	(The thing is) I'm going.	N4	
+〜んじゃない	=ん:助詞 =じゃ ない	Isn't it that…? / maybe it's that… (contraction of のではない)	plain form	casual	行ったんじゃない？	Didn't he go?	N3	
+〜わけがない	=わけ =が ない	No way that… / there's no reason to…	plain form		そんなわけがない。	There's no way that's true.	N3	
+〜わけではない	=わけ =で =は ない	It doesn't mean that…	plain form		嫌いなわけではない。	It's not that I dislike it.	N3	
+〜って (quotation)	=って:助詞	Casual と: says that / called / as for	any	casual	彼は来るって言った。	He said he'd come.	N3	
+〜ってば	=って =ば	Emphatic: I told you…!	any	casual / impatient	だから行くってば。	I said I'm going!		
+〜なければならない	ない =ば なる ない	Must do	verb (nai-form)		進まなければならない。	I must move on.	N4	
+〜なければいけない	ない =ば いける ない	Must do / have to	verb (nai-form)		急がなければいけない。	I have to hurry.	N4	
+〜なきゃ	@V =なきゃ	Contraction of なければ: (I) must…	verb (nai-form)	casual	もう行かなきゃ。	I have to go now.	N3	
+〜なきゃいけない	@V =なきゃ いける ない	Contraction of なければいけない	verb (nai-form)	casual	帰らなきゃいけない。	I have to go home.	N3	
+〜なくちゃ	@V =なく =ちゃ	Contraction of なくては: (I) must…	verb (nai-form)	casual	急がなくちゃ。	I've got to hurry.	N3	
+〜ねばならない	@V =ね =ば なる ない	Must do (formal / archaic)	verb (nai-form)	formal / archaic	戦わねばならない。	I must fight.	N2	
+〜てはいけない	@VAX =て =は いける ない ; @VAX =ては いける ない	Must not do	verb (te-form)		ここに入ってはいけない。	You must not enter here.	N4	
+〜ちゃいけない	@VAX =ちゃ いける ない	Contraction of てはいけない: mustn't	verb (te-form)	casual	触っちゃいけない。	You mustn't touch it.	N4	
+〜てもいい	@VAX =て|=で =も いい	May do / it's OK to	verb (te-form)		入ってもいい。	You may come in.	N4	
+〜ても / 〜でも (even if)	@VAX =て|=で =も	Even if / even though	verb / adjective (te-form)		負けても諦めない。	I won't give up even if I lose.	N4	
+〜ちゃ (ては)	@VAX =ちゃ|=じゃ	Contraction of ては / では	verb (te-form)	casual	見ちゃだめ。	Don't look.	N3	
+〜ないで	@VAX ない =で	Please don't… / without doing	verb (nai-form)		行かないで。	Don't go.	N4	
+〜たことがある	=た|=だ =こと =が ある	Have done before (experience)	verb (ta-form)		行ったことがある。	I've been there.	N4	
+〜たことがない	=た|=だ =こと =が ない	Have never done	verb (ta-form)		食べたことがない。	I've never eaten it.	N4	
+〜たほうがいい	=た|=だ =ほう =が いい	You should do (advice)	verb (ta-form)		休んだほうがいい。	You'd better rest.	N4	
+〜ないほうがいい	ない =ほう =が いい	You'd better not	verb (nai-form)		行かないほうがいい。	You'd better not go.	N4	
+〜べきだ	@V =べき =だ|=です ; @V =べき	Should do (moral obligation)	verb (dictionary form)	formal	謝るべきだ。	You should apologize.	N3	
+〜はずだ	=はず =だ|=です	Should be / expected to be	plain form		彼は来るはずだ。	He should be coming.	N4	
+〜(よ)うとする	@V =と する	Try to do / be about to do	volitional form		逃げようとする。	He tries to escape.	N3	
+〜てあげる	@VAX =て|=で あげる	Do something for someone (giving a favor)	verb (te-form)		荷物を持ってあげる。	I'll carry your bags for you.	N4	
+〜てくれる	@VAX =て|=で くれる	Someone does something for me / us	verb (te-form)	くれ alone is a blunt request	助けてくれた。	He helped me.	N4	
+〜てもらう	@VAX =て|=で もらう	Get someone to do something (receiving a favor)	verb (te-form)		教えてもらう。	I get (someone) to teach me.	N4	
+〜ていただく	@VAX =て|=で いただく	Humble: receive the favor of someone doing…	verb (te-form)	humble / formal	説明していただく。	I receive an explanation.	N3	
+〜てください / 〜てくださる	@VAX =て|=で ください|くださる	Please do… / (honorific) someone does for me	verb (te-form)	polite	ここで待ってください。	Please wait here.	N5	
+〜ないでください	@VAX ない =で ください|くださる	Please don't…	verb (nai-form)	polite	触らないでください。	Please don't touch.	N4	
+〜ていく	@VAX =て|=で いく|行く	Do and go; continue to / gradually	verb (te-form)		歩いていく。	I'll go on foot.	N4	
+〜てくる	@VAX =て|=で くる|来る	Do and come; start to / come back after doing	verb (te-form)		ちょっと見てくる。	I'll go and have a look.	N4	
+〜はじめる	@V はじめる|始める	Start doing	verb stem		雨が降りはじめた。	It started to rain.	N4	
+〜おわる	@V おわる|終わる	Finish doing	verb stem		読みおわった。	I finished reading.	N4	
+〜つづける	@V つづける|続ける	Keep doing	verb stem		走りつづける。	Keep running.	N4	
+〜がち	@V がち	Tends to / prone to	verb stem / noun		忘れがちだ。	I tend to forget.	N2	
+〜っぽい	っぽい	-ish / like / prone to	noun / stem	casual	子供っぽい。	Childish.	N2	
+〜たばかり	=た =ばかり	Has just done	verb (ta-form)		食べたばかりだ。	I've just eaten.	N4	
+〜たところだ	=た =ところ	Has just done (this moment)	verb (ta-form)		着いたところだ。	I've just arrived.	N3	
+〜ところだ	@V =ところ =だ|=です	About to do / in the middle of doing	verb		出かけるところだ。	I'm just about to leave.	N3	
+〜ようだ	=よう =だ|=です|=な	Seems like / as if	plain form		誰かいるようだ。	It seems someone is there.	N4	
+〜みたいだ	=みたい =だ|=です|=な	Seems like / as if (casual)	plain form / noun	casual	夢みたいだ。	It's like a dream.	N4	
+〜らしい	らしい:助動詞	Apparently / it seems (hearsay or inference)	plain form		彼は強いらしい。	Apparently he's strong.	N4	With a noun, it can be the suffix meaning "characteristic of" (男らしい = manly); the popup does not distinguish between the two usages.
+〜だろう / 〜でしょう	=だろう|=でしょう	Probably / I suppose / right?	plain form	plain / polite	明日は晴れるだろう。	It will probably be sunny.	N4	
+〜かもしれない	=か =も しれる ない ; =か =も しれる =ませ =ん	Maybe / might	plain form	plain / polite	罠かもしれない。	It might be a trap.	N4	
+〜にちがいない	=に ちがい|違い ない	Must be / surely	plain form		彼が犯人にちがいない。	He must be the culprit.	N3	
+〜つもり	@VAX =つもり ; =の =つもり	Intend to / plan to	verb / noun + の		行くつもりだ。	I intend to go.	N4	
+〜ので	=ので ; =の =で	Because / since	plain form		遅いので帰る。	It's late, so I'm going home.	N4	
+〜のに	=のに ; =の =に	Although / even though; for the purpose of	plain form		強いのに負けた。	Even though he's strong, he lost.	N4	
+〜ために	=ため =に	In order to / because of	verb / noun + の		勝つために戦う。	I fight in order to win.	N4	
+〜ように	=よう =に	So that / in the way that	verb		忘れないように書く。	I write it down so I won't forget.	N4	
+〜ようになる	=よう =に なる	Come to be able to / start to	verb		話せるようになった。	I became able to speak.	N4	
+〜ことになる	=こと =に なる	It is decided / it turns out that…	verb		行くことになった。	It was decided that I'd go.	N4	
+〜ことにする	=こと =に する	Decide to…	verb		行くことにした。	I decided to go.	N4	
+〜ことができる	=こと =が できる	Be able to…	verb		泳ぐことができる。	I can swim.	N4	
+〜しかない	=しか ない	Have no choice but to / only	verb / noun		戦うしかない。	There's nothing to do but fight.	N3	
+〜ざるを得ない	=ざる =を 得る|える ない	Cannot help but / have no choice but to	verb (nai-form)	formal	認めざるを得ない。	I have no choice but to admit it.	N1	
+ございます	ござる ます	Polite 'to be' (honorific of ある)		very polite	おはようございます。	Good morning.	N4	
+いらっしゃる	いらっしゃる	Honorific: to be / to go / to come		honorific	先生はいらっしゃいますか？	Is the teacher in?	N4	
+〜やがる	@VN やがる	Contemptuous: dares to do…	verb stem	rude	笑いやがる。	How dare he laugh.	N1	
+〜っす / 〜ッス	=っす|=ッス|=スッ	Casual desu		very casual / youth	オレっす。	It's me.		
+〜へん (Kansai negative)	@V =へん	Kansai dialect negative (= ない)	verb	Kansai	知らへん。	I don't know.		
+〜ねん (Kansai)	@VAX =ねん	Kansai explanatory (= のだ)	plain form	Kansai	何でやねん！	What the heck!		
+〜とる (dialect)	@VAX =とる	Dialect for ている (west Japan)	verb (te-form)	dialect	知っとる。	I know it.		
+〜なら	=なら	If it's the case that… / as for… (contextual conditional)	plain form / noun		行くなら早く言え。	If you're going, say so soon.	N4	
+〜たって	=たって	Even if / no matter how (colloquial ても)	verb (ta-form)	casual	謝ったって許さない。	I won't forgive you even if you apologize.	N3	
+〜まい	=まい	Negative volitional: surely won't / won't do	verb	literary	二度と戻るまい。	I will never come back.	N1	
+〜ませんか	@V =ませ =ん =か	Won't you…? / How about…? (polite invitation)	verb stem	polite	一緒に行きませんか？	Won't you come with me?	N5	
+〜ましょうか	@V =ましょう =か	Shall I…? / Shall we…?	verb stem	polite	手伝いましょうか？	Shall I help?	N4	
+〜てほしい	@VAX =て|=で ほしい|欲しい	Want (someone) to do…	verb (te-form)		手伝ってほしい。	I want you to help.	N4	
+〜ないでほしい	ない =で ほしい|欲しい	Want (someone) not to do…	verb (nai-form)		行かないでほしい。	I don't want you to go.	N4	
+〜たがっている	@V たがる =て いる	(Third person) is wanting to do	verb stem		彼は行きたがっている。	He wants to go.	N3	
+〜(よ)うか	+よう|+こう|+そう|+とう|+のう|+ぼう|+もう|+ろう|+ごう|+おう:動詞 =か	Shall we…? / I wonder if I should…	volitional	casual	そろそろ帰ろうか。	Shall we head home soon?	N4	
+〜てくれ	@VAX =て|=で =くれ	Blunt request: do it for me	verb (te-form)	masculine / blunt	助けてくれ！	Help me!	N4	
+〜な (prohibition)	@V =な	Don't…! (plain prohibition)	verb (dictionary form)	blunt / masculine	動くな！	Don't move!	N4	
+〜なくてはならない	ない =て =は なる ない ; =なく =ては なる ない	Must do	verb (nai-form)		行かなくてはならない。	I must go.	N4	
+〜なくてはいけない	ない =て =は いける ない ; =なく =ては いける ない	Must do / have to	verb (nai-form)		急がなくてはいけない。	I have to hurry.	N4	
+〜ないといけない	ない =と いける ない	Must do (casual)	verb (nai-form)	casual	早く寝ないといけない。	I have to go to bed early.	N4	
+〜なくてもいい	ない =て =も いい ; =なく =ても いい	You don't have to	verb (nai-form)		行かなくてもいい。	You don't have to go.	N4	
+〜てもかまわない	@VAX =て|=で =も かまう|構う ない	It's fine to… / I don't mind if…	verb (te-form)		食べてもかまわない。	You may eat it.	N4	
+〜ばいい	@VAX =ば いい	You should / it would be good if… (suggestion)	verb (ba-form)		謝ればいい。	You should just apologize.	N4	
+〜たらいい	@VAX =たら|=だら いい	It would be good if… / why don't you…	verb (ta-form)		聞いたらいい。	Why not ask?	N4	
+〜ほうがいい	=ほう =が いい	It's better to…	verb		早く行くほうがいい。	It's better to go early.	N4	
+〜ことだ	@VAX =こと =だ	You should… (advice) / It's a matter of…	verb (dictionary / nai-form)		よく考えることだ。	What you need is to think hard.	N3	
+〜から (reason)	@VAX =から:助詞	Because / so… (reason stated)	plain / polite form		危険だから行くな。	It's dangerous, so don't go.	N5	
+〜けど / 〜けれども	@VAX =けど|=けれど|=けれども|=が	But / although (soft contrast)	plain / polite form		強いけど遅い。	He's strong, but slow.	N4	
+〜し	@VAX =し	…and what's more (listing reasons)	plain form		安いし美味しい。	It's cheap, and tasty too.	N4	
+〜くせに	=くせ =に	Even though… (with contempt)	plain form	critical	知っているくせに言わない。	You know it but won't say.	N2	
+〜にもかかわらず	=に =も かかわる =ず	Despite / in spite of	noun / plain form	formal	雨にもかかわらず出発した。	We left despite the rain.	N2	
+〜ものの	=もの =の	Although / even though (formal)	plain form	formal	買ったものの使わない。	I bought it but never use it.	N2	
+〜どころか	=どころ =か	Far from… / not only… (but)	plain form		勝つどころか負けた。	Far from winning, I lost.	N2	
+〜ながらも	@V =ながら =も	While / although (doing)	verb stem		知りながらも黙っていた。	He kept quiet although he knew.	N2	
+〜つつ	@V =つつ	While doing (literary) / even while	verb stem	literary	考えつつ歩く。	I walk while thinking.	N2	
+〜たまま	=た =まま	Remain in a state: leave as is	verb (ta-form)		靴を履いたまま入る。	He enters with his shoes on.	N3	
+〜ずつ	=ずつ	Each / at a time (distributive)	number / quantity		少しずつ進む。	I advance little by little.	N4	
+〜きる	@V きる|切る	Do completely / to the end	verb stem		全部食べきった。	I ate it all up.	N3	
+〜かける	~かけ:名詞 ; @V かける|掛ける	Half-done / start to do and stop	verb stem		読みかけの本。	A half-read book.	N3	
+〜づらい	@V づらい|辛い	Hard to do (emotionally / physically)	verb stem		言いづらい。	It's hard to say.	N3	
+〜がたい	@V がたい	Hard to do (literary)	verb stem	literary	信じがたい。	Hard to believe.	N1	
+〜まくる	@V まくる	Do over and over / non-stop	verb stem	casual	撃ちまくる。	Keep firing away.		
+〜かねる	@V かねる	Cannot bring oneself to / can't (polite refusal)	verb stem	formal	決めかねる。	I can't make up my mind.	N1	
+〜かねない	@V かねる ない	Might well (do something bad)	verb stem		死にかねない。	He could even die.	N1	
+〜得る (える / うる)	@V える|うる|得る	Can / be possible to	verb stem	formal	あり得る。	It's possible.	N2	
+〜わけにはいかない	=わけ =に =は いく ない	Cannot (for some reason), can't afford to	plain form		諦めるわけにはいかない。	I can't give up.	N3	
+〜ずにはいられない	@V =ず =に =は いる =られ ない ; @V =ず =に =は いる られる ない	Can't help doing	verb (nai-stem)		笑わずにはいられない。	I can't help laughing.	N2	
+〜ないではいられない	ない =で =は いる られる ない	Can't help doing	verb (nai-form)		笑わないではいられない。	I can't help laughing.	N2	
+〜てならない	@VAXNS =て|=で なる ない	Can't help feeling…	verb / adjective (te-form)		心配でならない。	I can't stop worrying.	N2	
+〜てたまらない	@VAX =て たまる ない	Extremely… / can't stand it	verb / adjective (te-form)		会いたくてたまらない。	I'm dying to see you.	N3	
+〜てしょうがない	@VAX =て =しょう =が ない	Extremely… / can't help it	verb / adjective (te-form)	casual	嬉しくてしょうがない。	I'm overjoyed.	N3	
+〜はずがない	=はず =が ない	There's no way that…	plain form		負けるはずがない。	There's no way I'll lose.	N3	
+〜ようがない	@V =よう =が ない	No way to… (it can't be done)	verb stem		直しようがない。	There's no way to fix it.	N2	
+〜うちに	=うち =に	While (it is still) / before it changes	plain form / noun + の		忘れないうちに書く。	I write it down before I forget.	N3	
+〜ところ	@VAX =ところ	The place / the moment of…	plain form		ここが彼の住んでいるところだ。	This is where he lives.	N3	
+〜という / 〜って (called)	=と =いう|言う	Called / said / the (thing) named…	any		ゼルダという名前の姫。	A princess named Zelda.	N4	
+〜として	=と する =て	As (a role) / in the capacity of	noun		勇者として戦う。	I fight as a hero.	N3	
+〜について	=に つく =て	About / concerning	noun		この町について教えてください。	Tell me about this town.	N4	
+〜によって	=に よる|依る =て	By / depending on / due to	noun		場合によって違う。	It differs depending on the case.	N3	
+〜に対して	=に 対する|たいする =て	Toward / against / in contrast to	noun		敵に対して容赦しない。	No mercy toward the enemy.	N3	
+〜にとって	=に とる|取る =て	For (someone) / from the point of view of	noun		私にとって大切だ。	It's important to me.	N3	
+〜かどうか	=か =どう =か	Whether or not	plain form		行くかどうか決める。	I decide whether to go.	N4	
+お〜になる	=お|=ご *:名詞 =に なる ; =お|=ご *:動詞 =に なる	Honorific: (someone) does	verb stem	honorific / keigo	先生がお読みになる。	The teacher reads.	N3	
+お〜する	=お|=ご *:動詞 する ; =お|=ご *:名詞 する	Humble: I do (for someone)	verb stem	humble / keigo	お持ちします。	I'll carry it for you.	N3	
+〜でございます	=で ござる ます	Very polite です	noun / adjective	very polite	こちらでございます。	This way, please.	N4	
+〜ておる / 〜ております	@VAX =て おる	Humble / old-fashioned ている	verb (te-form)	humble / archaic	お待ちしております。	We look forward to your visit.	N3	
+〜いたします	@VN いたす =ます	Humble: I will do	verb stem / noun	humble / keigo	ご案内いたします。	I will guide you.	N3	
+〜させていただく	させる|せる =て いただく	Humbly do (with your permission)	verb	humble / keigo	拝見させていただきます。	Allow me to take a look.	N2	
+〜と申します	=と 申す|もうす	Humble: I am called…	name	humble / keigo	山田と申します。	My name is Yamada.	N4	
+〜じゃん	=じゃん	Isn't it?! / See? (casual confirming)	plain form	very casual	いいじゃん。	Nice, isn't it?		
+〜だよね / 〜よね	=よ =ね	…right? (seeking agreement)	any	casual	強いよね。	He's strong, right?	N4	
+〜かな / 〜かなあ	=か =な|=なあ	I wonder… (talking to oneself)	plain form	casual	大丈夫かな。	I wonder if it's OK.	N4	
+〜っけ	=っけ|=たっけ|=だっけ	Was it…? (trying to recall)	plain form	casual	何だっけ？	What was it again?	N3	
+〜やん / 〜やんか (Kansai)	=や =ん	Kansai: = じゃん / ではないか	plain form	Kansai	ええやん。	That's good, right?		
+〜ねえ / 〜ねぇ (negative)	@VAX =ねえ|=ねぇ	Casual / rough contraction of ない	verb / adjective	rough / masculine	知らねえよ。	I don't know!		
+〜んだよ	=ん =だ =よ	Emphatic explanatory: you see, it's that…!	plain form	casual	行くんだよ。	I'm going, you see!		
+〜ちまう	@VAX =ちま|=ちまっ	Rough contraction of てしまう	verb (te-form)	rough / masculine	やっちまった。	I've done it now.		
+〜てか / 〜っていうか	=て:助動詞 =か ; =っていうか|=つーか	Or rather / I mean (casual)		very casual	てか、誰？	I mean, who?		
+何か / なんか	=何|=なに|=なん =か ; =なんか	Something / anything; or: 'like…', 'stuff like' (casual)		casual	何か来る！	Something's coming!	N5	Also, なんか can be used as a filler: なんか変だ = "something's off."
+何て / なんて	=何|=なに|=なん =て ; =なんて	What (a…)! / how… / things like… (disdain or surprise)		casual	何て強い敵だ。	What a strong enemy!	N3	
+何だ / なんだ	=何|=なに|=なん =だ	What is it? / It's… (oh, it was…)		casual	何だ、お前か。	Oh, it's just you.	N5	
+何で / なんで	=何|=なに|=なん =で	Why? / by what means?		casual	何で逃げるんだ。	Why are you running away?	N5	
+何も / なにも	=何|=なに|=なん =も	Nothing (with a negative) / anything at all			何も見えない。	I can't see anything.	N5	
+何を / なにを	=何|=なに|=なん =を	What (object marker)			何をしている。	What are you doing?	N5	
+何が / なにが	=何|=なに|=なん =が	What (subject marker)			何が起きた。	What happened?	N5	
+何に / なにに	=何|=なに|=なん =に	To / for / on what			何に使う。	What do you use it for?	N5	
+何と / なにと	=何|=なに|=なん =と	With / as what; 'what a…' (なんと = how astonishing)			何と美しい。	How beautiful!	N4	
+何だか / なんだか	=何|=なに|=なん =だ =か	Somehow / somewhat; I don't know why		casual	何だか怖い。	Somehow it's scary.	N3	
+何なの / なんなの	=何|=なに|=なん =な|=だ =の	What is it?! (emphatic, irritated)		casual	何なの、これ。	What is this?!	N4	
+何だって / なんだって	=何|=なに|=なん =だ =って	What?! (disbelief) / even…		casual	何だって！	What did you say?!	N3	
+何と言っても / なんといっても	=何|=なに|=なん =と 言う|いう =て =も	No matter what you say / above all			何と言っても命が大事だ。	Above all, life matters most.	N2	
+何度も / なんども	=何度|=なんど =も	Many times / over and over			何度も挑戦した。	I tried many times.	N4	
+何でも / なんでも	=何|=なに|=なん =で =も	Anything / everything; apparently			何でも聞いてくれ。	Ask me anything.	N4	
+何とか / なんとか	=何|=なに|=なん =と =か	Somehow (manage) / one way or another			何とか倒した。	I somehow beat it.	N3	
+何より / なにより	=何|=なに|=なん =より	More than anything			何より大切だ。	It's the most important thing.	N3	

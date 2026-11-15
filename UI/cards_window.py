@@ -6,18 +6,21 @@ para que la ventana principal actualice las palabras resaltadas.
 """
 import html
 import re
+import threading
 from datetime import datetime
 from pathlib import Path
 
 from PyQt5.QtCore import QRectF, QSize, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFontMetrics, QKeySequence, QPainter, QPen, QTextOption
-from PyQt5.QtWidgets import (QAbstractItemView, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+from PyQt5.QtWidgets import (QAbstractItemView, QCheckBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
                              QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QTextBrowser,
                              QStackedWidget, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
 import Cards.anki_export as anki_export
 import Translator.languages as languages
 from UI.main_ui import confirm, set_prop
+import UI.speech as speech
+from UI.speech import SpeakButton
 
 EXPORT_DIR = Path(__file__).resolve().parent / "exports"
 ROLE_ID, ROLE_SIDE, ROLE_JA = Qt.UserRole, Qt.UserRole + 1, Qt.UserRole + 2
@@ -295,7 +298,7 @@ class _AutoText(QTextBrowser):
 class _Face(QFrame):
     """Una cara de la tarjeta (anverso o reverso): título pequeño, contenido centrado y, abajo, etiquetas."""
 
-    def __init__(self, title: str, parent=None):
+    def __init__(self, title: str, parent=None, speak_label: str = "", speak_tip: str = ""):
         super().__init__(parent)
         self.setObjectName("card")
         self._lay = QVBoxLayout(self)
@@ -303,7 +306,18 @@ class _Face(QFrame):
         self._lay.setSpacing(8)
         head = QLabel(title)
         head.setObjectName("sect")
-        self._lay.addWidget(head)
+        head_row = QHBoxLayout()
+        head_row.setContentsMargins(0, 0, 0, 0)
+        head_row.addWidget(head)
+        head_row.addStretch(1)
+        self.btn_speak = None
+        if speak_label:                         # 🔊 «palabra» / «frase» a la derecha de la cabecera de la cara
+            self.speak_caption = QLabel(speak_label)
+            self.speak_caption.setObjectName("muted")
+            self.btn_speak = SpeakButton(speak_tip, (26, 26))
+            head_row.addWidget(self.speak_caption)
+            head_row.addWidget(self.btn_speak)
+        self._lay.addLayout(head_row)
         self.body = _AutoText()
         self._lay.addWidget(self.body)
         self.pills = _PillBox(center=True, top=10)
@@ -318,8 +332,11 @@ class _Face(QFrame):
 class CardPreview(QScrollArea):
     """Cómo se verá la tarjeta en Anki: anverso (palabra y lectura o tipo) y reverso (significado, frase y traducción)."""
 
+    speak_requested = pyqtSignal(str)       # 🔊: texto a leer (la palabra o la frase)
+
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._word_text = self._sentence_text = ""
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -327,8 +344,10 @@ class CardPreview(QScrollArea):
         lay = QVBoxLayout(inner)
         lay.setContentsMargins(0, 0, 6, 0)
         lay.setSpacing(12)
-        self.front = _Face("ANVERSO")
-        self.back = _Face("REVERSO")
+        self.front = _Face("ANVERSO", speak_label="palabra", speak_tip="Escuchar la palabra")
+        self.back = _Face("REVERSO", speak_label="frase", speak_tip="Escuchar la frase original")
+        self.front.btn_speak.clicked.connect(lambda: self._word_text and self.speak_requested.emit(self._word_text))
+        self.back.btn_speak.clicked.connect(lambda: self._sentence_text and self.speak_requested.emit(self._sentence_text))
         lay.addWidget(self.front)
         lay.addWidget(self.back)
         lay.addStretch(1)
@@ -337,6 +356,9 @@ class CardPreview(QScrollArea):
     def show_card(self, card, lang: str):
         esc = html.escape
         ja = lang == "ja"
+        self._word_text, self._sentence_text = speech.card_texts(card, lang)
+        self.front.btn_speak.setVisible(bool(self._word_text)); self.front.speak_caption.setVisible(bool(self._word_text))
+        self.back.btn_speak.setVisible(bool(self._sentence_text)); self.back.speak_caption.setVisible(bool(self._sentence_text))
         size = 52 if ja else 46
         front = f'<div style="font-size:{size}px; font-weight:{400 if ja else 700}; color:#ffffff;">{esc(card.word)}</div>'
         pills = []
@@ -376,10 +398,15 @@ class CardsPage(QWidget):
     """Lista de tarjetas (la más nueva arriba) con vista previa, editor, buscador y exportación."""
 
     changed = pyqtSignal()
+    speak_requested = pyqtSignal(str)             # 🔊 de la vista previa o del editor: texto a leer
+    _progress = pyqtSignal(int, int)              # (hilo de la exportación) audios listos / total
+    _audio_ready = pyqtSignal(str, str, object, str, int)    # tipo, ruta, {texto: archivo}, error, cuántos MP3
 
     def __init__(self, store, parent=None):
         super().__init__(parent)
         self.store = store
+        self.speaker = None                         # la ventana principal pone aquí la voz (speech.Speaker)
+        self._exporting = False
         self._loading = False       # True mientras se rellenan los editores (no guardar)
         self._current_id = None     # tarjeta que se está editando
         self._all = []              # todas las tarjetas del idioma, la más nueva primero
@@ -464,6 +491,13 @@ class CardsPage(QWidget):
         bar.setSpacing(8)
         bar.addWidget(self.btn_delete)
         bar.addStretch(1)
+        self.chk_audio = QCheckBox("Incluir audio")
+        self.chk_audio.setChecked(True)
+        self.chk_audio.setVisible(False)             # aparece cuando hay voz (set_speaker)
+        self.chk_audio.setToolTip("Añade la voz de Windows de la palabra y de la frase a cada tarjeta. En el paquete .apkg va dentro; "
+                                  "con el .txt se crea una carpeta «…_audio» para copiar a la carpeta collection.media de Anki. "
+                                  "Solo se genera el audio que falta (tarda ~1 s por frase nueva).")
+        bar.addWidget(self.chk_audio)
         bar.addWidget(self.btn_txt)
         bar.addWidget(self.btn_apkg)
         self.info = QLabel()                 # resultado de la última acción (exportar, etc.)
@@ -491,6 +525,11 @@ class CardsPage(QWidget):
         self.ed_sentence.textChanged.connect(lambda: self._edited("sentence", self.ed_sentence.toPlainText()))
         self.ed_sentence_es.textChanged.connect(
             lambda: self._edited("sentence_es", self.ed_sentence_es.toPlainText()))
+        self.preview.speak_requested.connect(self.speak_requested)
+        self.btn_ed_word.clicked.connect(lambda: self._speak_editor("word"))
+        self.btn_ed_sentence.clicked.connect(lambda: self._speak_editor("sentence"))
+        self._progress.connect(self._on_audio_progress)
+        self._audio_ready.connect(self._finish_export)
         self.btn_delete.clicked.connect(self.delete_selected)
         self.btn_txt.clicked.connect(lambda: self.export("txt"))
         self.btn_apkg.clicked.connect(lambda: self.export("apkg"))
@@ -527,6 +566,8 @@ class CardsPage(QWidget):
         self.cap_meaning, self.cap_sentence, self.cap_sentence_es = caption("SIGNIFICADO"), caption("FRASE"), caption("TRADUCCIÓN")
         self.cap_tags = caption("ETIQUETAS")
         self.tags_row = _PillBox(center=False)
+        self.btn_ed_word = SpeakButton("Escuchar la palabra", (24, 24))
+        self.btn_ed_sentence = SpeakButton("Escuchar la frase original", (24, 24))
         self.ok = QLabel("✓ Los cambios se guardan solos")
         self.ok.setObjectName("ok")
         self.btn_back = QPushButton("Ver vista previa")
@@ -539,13 +580,26 @@ class CardsPage(QWidget):
         grid.setContentsMargins(20, 16, 20, 14)
         grid.setHorizontalSpacing(14)
         grid.setVerticalSpacing(4)
-        grid.addWidget(self.cap_word, 0, 0)
+        word_head = QHBoxLayout()
+        word_head.setContentsMargins(0, 0, 0, 0)
+        word_head.addWidget(self.cap_word)
+        word_head.addStretch(1)
+        word_head.addWidget(self.btn_ed_word)
+        grid.addLayout(word_head, 0, 0)
         grid.addWidget(self.cap_reading, 0, 1)
         grid.addWidget(self.ed_word, 1, 0)
         grid.addWidget(self.ed_reading, 1, 1)
         for row, (cap, ed) in enumerate(((self.cap_meaning, self.ed_meaning), (self.cap_sentence, self.ed_sentence),
                                          (self.cap_sentence_es, self.ed_sentence_es)), start=2):
-            grid.addWidget(cap, row * 2 - 2, 0, 1, 2)
+            if cap is self.cap_sentence:
+                head = QHBoxLayout()
+                head.setContentsMargins(0, 0, 0, 0)
+                head.addWidget(cap)
+                head.addStretch(1)
+                head.addWidget(self.btn_ed_sentence)
+                grid.addLayout(head, row * 2 - 2, 0, 1, 2)
+            else:
+                grid.addWidget(cap, row * 2 - 2, 0, 1, 2)
             grid.addWidget(ed, row * 2 - 1, 0, 1, 2)
         grid.addWidget(self.cap_tags, 8, 0, 1, 2)
         grid.addWidget(self.tags_row, 9, 0, 1, 2)
@@ -766,24 +820,75 @@ class CardsPage(QWidget):
         self.info.setText(text)
         self.info.setVisible(bool(text))
 
-    def export(self, kind: str, path=None):
-        """Exporta todas las tarjetas. `kind` es «txt» o «apkg»; sin `path` pregunta dónde."""
-        cards = self.store.all()
-        if not cards:
-            return
-        if kind == "txt":
-            suffix, label, write = ".txt", "Texto para Anki (*.txt)", anki_export.export_tsv
+    # --- voz ---
+    def set_speaker(self, speaker):
+        """Activa la voz: la casilla «Incluir audio» de la exportación (si este sistema tiene voz)."""
+        self.speaker = speaker
+        self.chk_audio.setVisible(bool(speaker is not None and speaker.available))
+
+    def _speak_editor(self, which: str):
+        """🔊 del editor: lee lo que hay escrito ahora en la palabra (en japonés, su lectura) o en la frase."""
+        lang = languages.active().code
+        if which == "word":
+            text = (self.ed_reading.text().strip() or self.ed_word.text()) if lang == "ja" else self.ed_word.text()
         else:
-            suffix, label, write = ".apkg", "Paquete de Anki (*.apkg)", anki_export.export_apkg
+            text = self.ed_sentence.toPlainText()
+        text = speech.clean_text(text, lang)
+        if text:
+            self.speak_requested.emit(text)
+
+    # --- exportación ---
+    def export(self, kind: str, path=None, audio=None):
+        """Exporta todas las tarjetas. `kind` es «txt» o «apkg»; sin `path` pregunta dónde. Con audio (casilla «Incluir
+        audio», o `audio=True`) genera antes la voz de lo que falta en un hilo y luego escribe el archivo."""
+        cards = self.store.all()
+        if not cards or self._exporting:
+            return
         if path is None:
+            suffix = ".txt" if kind == "txt" else ".apkg"
+            label = "Texto para Anki (*.txt)" if kind == "txt" else "Paquete de Anki (*.apkg)"
             EXPORT_DIR.mkdir(parents=True, exist_ok=True)
             lang = cards[0].lang or "en"
             default = str(EXPORT_DIR / f"vocabulario_{lang}_{datetime.now():%Y%m%d_%H%M}{suffix}")
             path, _ = QFileDialog.getSaveFileName(self, "Exportar", default, label)
             if not path:
                 return
+        if audio is None:
+            audio = bool(self.speaker is not None and self.speaker.available and self.chk_audio.isChecked())
+        if not audio or self.speaker is None:
+            self._write_export(kind, cards, path, None, "", 0)
+            return
+        lang = cards[0].lang or "en"
+        texts = anki_export.audio_texts(cards)
+        self._set_exporting(True)
+        self._say(f"Generando audio… 0/{len(texts)}")
+
+        def work():
+            try:
+                paths, err = self.speaker.ensure(texts, lang, progress=lambda d, t: self._progress.emit(d, t))
+                media, mp3 = self.speaker.media_files(paths, lang)
+            except Exception as exc:  # noqa: BLE001
+                media, mp3, err = {}, 0, f"No se pudo generar el audio: {exc}"
+            self._audio_ready.emit(kind, str(path), media, err, mp3)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _set_exporting(self, on: bool):
+        self._exporting = on
+        for b in (self.btn_txt, self.btn_apkg, self.btn_delete, self.chk_audio):
+            b.setEnabled(not on)
+
+    def _on_audio_progress(self, done: int, total: int):
+        if self._exporting:
+            self._say(f"Generando audio… {done}/{total}")
+
+    def _finish_export(self, kind, path, media, err, mp3):
+        self._set_exporting(False)
+        self._write_export(kind, self.store.all(), path, media, err, mp3)
+
+    def _write_export(self, kind, cards, path, media, err, mp3):
+        write = anki_export.export_tsv if kind == "txt" else anki_export.export_apkg
         try:
-            count = write(cards, path)
+            count = write(cards, path, audio=media) if media else write(cards, path)
         except ImportError:
             self._say("Para exportar el paquete .apkg instala genanki:  pip install genanki")
             return
@@ -792,7 +897,15 @@ class CardsPage(QWidget):
             return
         missing = sum(1 for c in cards if c.sentence and not c.sentence_es)
         note = f" ({missing} sin traducción de la frase)" if missing else ""
-        self._say(f"✓ {count} tarjeta(s) exportada(s){note}: {path}")
+        extra = ""
+        if media:
+            fmt = "MP3" if mp3 == len(media) else "WAV (con «pip install lameenc» pesan ~10 veces menos)"
+            extra = f" · con audio: {len(media)} sonido(s), {fmt}"
+            if kind == "txt":
+                extra += f". Copia la carpeta «{Path(path).stem}_audio» a collection.media de Anki"
+        if err:
+            extra += f" · audio incompleto: {err}"
+        self._say(f"✓ {count} tarjeta(s) exportada(s){note}{extra}: {path}")
 
 
 CardsWindow = CardsPage          # nombre de antes

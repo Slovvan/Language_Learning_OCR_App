@@ -133,14 +133,18 @@ class GrammarBook:
         entries = []
         with open(self.path, encoding="utf-8-sig", newline="") as f:
             for row in csv.DictReader((ln for ln in f if not ln.startswith("#")), delimiter="\t"):
-                pattern = (row.get("Patrón") or "").strip()
-                alts = parse_match(row.get("Coincide") or "")
+                pattern = (row.get("Pattern") or row.get("Patrón") or "").strip()
+                alts = parse_match(row.get("Match") or row.get("Coincide") or "")
                 if pattern and alts:
                     entries.append(GrammarEntry(
-                        len(entries), pattern, alts, (row.get("Significado") or "").strip(),
-                        (row.get("Se une a") or "").strip(), (row.get("Registro") or "").strip(),
-                        (row.get("Ejemplo") or "").strip(), (row.get("Traducción") or "").strip(),
-                        (row.get("Nivel") or "").strip(), (row.get("Notas") or "").strip()))
+                        len(entries), pattern, alts,
+                        (row.get("Meaning") or row.get("Significado") or "").strip(),
+                        (row.get("Attaches to") or row.get("Se une a") or "").strip(),
+                        (row.get("Register") or row.get("Registro") or "").strip(),
+                        (row.get("Example") or row.get("Ejemplo") or "").strip(),
+                        (row.get("Translation") or row.get("Traducción") or "").strip(),
+                        (row.get("Level") or row.get("Nivel") or "").strip(),
+                        (row.get("Notes") or row.get("Notas") or "").strip()))
         self.entries = entries
         self.version += 1
         self._cache_clear()

@@ -1,0 +1,12 @@
+Diccionario francés → español (data/dictionary_fr.db, generado con build_dictionary_fr.py)
+
+- FreeDict + WikDict fra-spa (edición 2025.11.23, ~52 000 palabras), creado automáticamente por
+  WikDict a partir de Wiktionary / DBnary — licencia Creative Commons Atribución-CompartirIgual 3.0.
+  https://freedict.org · https://www.wikdict.com · https://www.wiktionary.org
+  (Como obra derivada, data/dictionary_fr.db se comparte con la misma licencia CC BY-SA 3.0.)
+- WordNet 3.0, (c) Princeton University — licencia permisiva (solo para palabras que FreeDict no tiene).
+- WOLF, Wordnet Libre du Français, Inria — licencia CeCILL-C.
+- Multilingual Central Repository (vía Open Multilingual WordNet) — CC BY 3.0.
+- simplemma (lematizador) — licencia MIT.
+- Modelo de traducción: Helsinki-NLP/opus-mt-fr-es (OPUS-MT, CC BY 4.0), convertido a CTranslate2.
+- Reconocimiento de texto latino: PaddleOCR / RapidOCR (Apache 2.0).

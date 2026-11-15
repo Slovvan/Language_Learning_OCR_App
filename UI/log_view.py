@@ -20,6 +20,7 @@ import Cards.log_export as log_export
 from UI.cards_window import _SearchBox
 from UI.main_ui import confirm, set_prop
 from UI.word_popup import HoverTextEdit
+from UI.speech import SpeakButton
 
 EXPORT_DIR = Path(__file__).resolve().parent / "exports"
 SESSION_START = datetime.now()              # «Esta sesión» = desde que se abrió la aplicación
@@ -154,6 +155,7 @@ class LogPage(QWidget):
     """Lista de capturas con filtros, panel de la frase elegida y exportación."""
 
     changed = pyqtSignal()                        # se eliminaron frases (la ventana principal actualiza su contador)
+    speak_requested = pyqtSignal(str)             # 🔊 del panel: leer el original en voz alta
 
     def __init__(self, log, words, parent=None, settings=None):
         super().__init__(parent)
@@ -265,12 +267,16 @@ class LogPage(QWidget):
         self.hint = QLabel("Mouse sobre una palabra del original: significado · clic: guardarla")
         self.hint.setObjectName("muted")
 
-        def row(label, button, box):
+        self.btn_speak_src = SpeakButton("Escuchar la frase original", (26, 26))
+
+        def row(label, button, box, extra=None):
             col = QVBoxLayout()
             col.setSpacing(4)
             top = QHBoxLayout()
             top.addWidget(label)
             top.addStretch(1)
+            if extra is not None:
+                top.addWidget(extra)
             top.addWidget(button)
             col.addLayout(top)
             col.addWidget(box, 1)
@@ -281,7 +287,7 @@ class LogPage(QWidget):
         rows = QVBoxLayout(self.detail)
         rows.setContentsMargins(16, 10, 16, 8)
         rows.setSpacing(8)
-        rows.addLayout(row(self.lbl_original, self.btn_copy_src, self.original), 1)      # una fila debajo de la otra
+        rows.addLayout(row(self.lbl_original, self.btn_copy_src, self.original, self.btn_speak_src), 1)      # una fila debajo de la otra
         rows.addLayout(row(self.lbl_translation, self.btn_copy_dst, self.translation), 1)
         rows.addWidget(self.hint)
         self.detail.setVisible(False)
@@ -336,6 +342,7 @@ class LogPage(QWidget):
         self.btn_delete.clicked.connect(self.delete_selected)
         self.btn_csv.clicked.connect(lambda: self.export("csv"))
         self.btn_txt.clicked.connect(lambda: self.export("txt"))
+        self.btn_speak_src.clicked.connect(self._speak_original)
         self.btn_copy_src.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.original.toPlainText()))
         self.btn_copy_dst.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.translation.toPlainText()))
         self.original.word_context.connect(self.words.set_context)
@@ -462,6 +469,11 @@ class LogPage(QWidget):
         if self.info.isVisible() and tuple(ids) != self._selection:
             self.show_message("")                  # el aviso de la acción anterior ya no viene al caso
         self._selection = tuple(ids)
+
+    def _speak_original(self):
+        text = self.original.toPlainText().strip()
+        if text:
+            self.speak_requested.emit(text)
 
     # --- alto del panel (lo elige la persona arrastrando el asa) ---
     def _load_panel_height(self) -> int:

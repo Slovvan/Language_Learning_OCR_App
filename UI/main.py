@@ -553,6 +553,8 @@ class MainWindow(QWidget):
         if self.cards_window is None:
             self.cards_window = CardsPage(self.store, self)
             self.cards_window.changed.connect(self._cards_changed)
+            self.cards_window.speak_requested.connect(self.speak)
+            self.cards_window.set_speaker(self.speaker)
             self.stack.addWidget(self.cards_window)
         self.cards_window.reload()
         self._show_page(self.cards_window, self.btn_cards)
@@ -574,6 +576,7 @@ class MainWindow(QWidget):
                 make_card=self.words.card_from_entry, has_card=self.words.has_card_for, settings=self.settings,
                 preview_card=self.words.card_preview)
             self.glossary_window.changed.connect(self._cards_changed)
+            self.glossary_window.speak_requested.connect(self.speak)
             self.stack.addWidget(self.glossary_window)
         self.glossary_window.set_language(lang)
         self._show_page(self.glossary_window, self.btn_glossary)
@@ -582,6 +585,7 @@ class MainWindow(QWidget):
         """Muestra la página «Registro» dentro de la ventana principal."""
         if self.log_window is None:
             self.log_window = LogPage(self.log, self.words, self, settings=self.settings)
+            self.log_window.speak_requested.connect(self.speak)
             self.log_window.changed.connect(self._update_buttons)
             self.stack.addWidget(self.log_window)
         self.log_window.reload()

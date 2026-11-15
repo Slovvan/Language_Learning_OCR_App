@@ -10,8 +10,10 @@
 El botón 🔊 (`SpeakButton`) está dibujado a mano para que se vea igual con cualquier fuente y tema.
 """
 import hashlib
+import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -29,11 +31,14 @@ MAX_CACHE_MB = 200
 LANG_NAMES = {"ja": "japonés", "en": "inglés", "fr": "francés"}
 EXIT_NO_VOICE = 3
 
-# Script de PowerShell (solo ASCII: así no depende de la codificación del archivo). Recibe el texto en un archivo UTF-8.
+# Script de PowerShell (solo ASCII: así no depende de la codificación del archivo). Recibe un lote en un JSON UTF-8
+# ([{"i":0,"text":"...","out":"ruta.wav"}, ...]) y sintetiza todos con UNA sola voz abierta (arrancar PowerShell es lo lento).
+# Imprime "OK i" o "ERR i" por elemento. Código de salida 3 = no hay voz de ese idioma.
 POWERSHELL = r"""
-param([string]$TextFile, [string]$Out, [string]$Lang)
+param([string]$Manifest, [string]$Lang)
 $ErrorActionPreference = 'Stop'
-$text = [IO.File]::ReadAllText($TextFile, [Text.Encoding]::UTF8)
+$items = @([IO.File]::ReadAllText($Manifest, [Text.Encoding]::UTF8) | ConvertFrom-Json)
+$mode = ''
 # 1) Voces de Windows (paquete de idioma / "Voz" en Configuracion)
 try {
     Add-Type -AssemblyName System.Runtime.WindowsRuntime
@@ -45,28 +50,40 @@ try {
     if ($voice) {
         $synth = New-Object Windows.Media.SpeechSynthesis.SpeechSynthesizer
         $synth.Voice = $voice
-        $stream = Await ($synth.SynthesizeTextToStreamAsync($text)) ([Windows.Media.SpeechSynthesis.SpeechSynthesisStream])
-        $size = [uint32]$stream.Size
-        $reader = New-Object Windows.Storage.Streams.DataReader($stream.GetInputStreamAt(0))
-        [void](Await ($reader.LoadAsync($size)) ([uint32]))
-        $bytes = New-Object byte[] $size
-        $reader.ReadBytes($bytes)
-        [IO.File]::WriteAllBytes($Out, $bytes)
-        exit 0
+        $mode = 'winrt'
     }
-} catch { }
+} catch { $mode = '' }
 # 2) Voces clasicas (SAPI)
-try {
-    Add-Type -AssemblyName System.Speech
-    $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
-    $v = $s.GetInstalledVoices() | Where-Object { $_.Enabled -and $_.VoiceInfo.Culture.Name -like "$Lang*" } | Select-Object -First 1
-    if (-not $v) { exit 3 }
-    $s.SelectVoice($v.VoiceInfo.Name)
-    $s.SetOutputToWaveFile($Out)
-    $s.Speak($text)
-    $s.Dispose()
-    exit 0
-} catch { exit 4 }
+if ($mode -eq '') {
+    try {
+        Add-Type -AssemblyName System.Speech
+        $sapi = New-Object System.Speech.Synthesis.SpeechSynthesizer
+        $v = $sapi.GetInstalledVoices() | Where-Object { $_.Enabled -and $_.VoiceInfo.Culture.Name -like "$Lang*" } | Select-Object -First 1
+        if (-not $v) { exit 3 }
+        $sapi.SelectVoice($v.VoiceInfo.Name)
+        $mode = 'sapi'
+    } catch { exit 4 }
+}
+foreach ($it in $items) {
+    try {
+        if ($mode -eq 'winrt') {
+            $stream = Await ($synth.SynthesizeTextToStreamAsync([string]$it.text)) ([Windows.Media.SpeechSynthesis.SpeechSynthesisStream])
+            $size = [uint32]$stream.Size
+            $reader = New-Object Windows.Storage.Streams.DataReader($stream.GetInputStreamAt(0))
+            [void](Await ($reader.LoadAsync($size)) ([uint32]))
+            $bytes = New-Object byte[] $size
+            $reader.ReadBytes($bytes)
+            [IO.File]::WriteAllBytes([string]$it.out, $bytes)
+            $reader.Dispose(); $stream.Dispose()
+        } else {
+            $sapi.SetOutputToWaveFile([string]$it.out)
+            $sapi.Speak([string]$it.text)
+            $sapi.SetOutputToNull()
+        }
+        Write-Output ("OK " + $it.i)
+    } catch { Write-Output ("ERR " + $it.i) }
+}
+exit 0
 """
 
 
@@ -90,31 +107,45 @@ def no_voice_message(lang: str) -> str:
             f"({name}) ▸ opciones del idioma ▸ Voz.")
 
 
-def windows_synth(text: str, lang: str, out_path: Path):
-    """Sintetiza `text` en `out_path` (.wav) con la voz de Windows. Devuelve None si salió bien o un código/mensaje de error."""
+def windows_synth_batch(jobs, lang: str):
+    """Sintetiza varios textos con UNA llamada a PowerShell. `jobs`: [(texto, ruta .wav)]. Devuelve una lista de errores
+    (None = bien, «no_voice» o un mensaje) con el mismo orden que `jobs`."""
+    jobs = list(jobs)
+    if not jobs:
+        return []
     work = Path(tempfile.mkdtemp(prefix="ocrvoz_"))
     try:
-        script, text_file, tmp = work / "voz.ps1", work / "texto.txt", work / "salida.wav"
+        script, manifest = work / "voz.ps1", work / "lote.json"
         script.write_text(POWERSHELL, encoding="ascii")
-        text_file.write_text(text, encoding="utf-8")
+        tmp_paths = [work / f"{i}.wav" for i in range(len(jobs))]
+        manifest.write_text(json.dumps([{"i": i, "text": t, "out": str(tmp_paths[i])} for i, (t, _p) in enumerate(jobs)],
+                                       ensure_ascii=False), encoding="utf-8")
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         proc = subprocess.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script),
-             "-TextFile", str(text_file), "-Out", str(tmp), "-Lang", lang],
-            capture_output=True, timeout=40, creationflags=flags)
+             "-Manifest", str(manifest), "-Lang", lang],
+            capture_output=True, timeout=40 + 4 * len(jobs), creationflags=flags)
         if proc.returncode == EXIT_NO_VOICE:
-            return "no_voice"
-        if proc.returncode != 0 or not tmp.exists() or tmp.stat().st_size < 100:
-            return "No se pudo generar la voz (PowerShell terminó con error)."
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(tmp, out_path)
-        return None
+            return ["no_voice"] * len(jobs)
+        if proc.returncode != 0:
+            return ["No se pudo generar la voz (PowerShell terminó con error)."] * len(jobs)
+        ok = {int(m.group(1)) for m in re.finditer(r"^OK (\d+)", proc.stdout.decode("utf-8", "replace"), re.M)}
+        out = []
+        for i, (_t, path) in enumerate(jobs):
+            tmp = tmp_paths[i]
+            if i in ok and tmp.exists() and tmp.stat().st_size > 100:
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+                os.replace(tmp, path)
+                out.append(None)
+            else:
+                out.append("No se pudo generar la voz de este texto.")
+        return out
     except FileNotFoundError:
-        return "No se encontró PowerShell para generar la voz."
+        return ["No se encontró PowerShell para generar la voz."] * len(jobs)
     except subprocess.TimeoutExpired:
-        return "La voz de Windows tardó demasiado."
+        return ["La voz de Windows tardó demasiado."] * len(jobs)
     except Exception as exc:  # noqa: BLE001
-        return f"No se pudo generar la voz: {exc}"
+        return [f"No se pudo generar la voz: {exc}"] * len(jobs)
     finally:
         for f in work.glob("*"):
             try:
@@ -127,6 +158,37 @@ def windows_synth(text: str, lang: str, out_path: Path):
             pass
 
 
+def windows_synth(text: str, lang: str, out_path: Path):
+    """Sintetiza un texto en `out_path` (.wav). Devuelve None si salió bien o un código/mensaje de error."""
+    return windows_synth_batch([(text, out_path)], lang)[0]
+
+
+def wav_to_mp3(wav_path: Path, mp3_path: Path) -> bool:
+    """Convierte un .wav (PCM de 16 bits) a MP3 de 32 kbps (≈10 veces más pequeño). Necesita `pip install lameenc`;
+    False si no está o si el audio no es PCM de 16 bits."""
+    try:
+        import lameenc
+        import wave
+        with wave.open(str(wav_path), "rb") as w:
+            channels, width, rate = w.getnchannels(), w.getsampwidth(), w.getframerate()
+            pcm = w.readframes(w.getnframes())
+        if width != 2 or channels not in (1, 2) or not pcm:
+            return False
+        enc = lameenc.Encoder()
+        enc.set_bit_rate(32 if channels == 1 else 64)
+        enc.set_in_sample_rate(rate)
+        enc.set_channels(channels)
+        enc.set_quality(2)
+        data = bytes(enc.encode(pcm)) + bytes(enc.flush())
+        Path(mp3_path).parent.mkdir(parents=True, exist_ok=True)
+        tmp = Path(str(mp3_path) + ".tmp")
+        tmp.write_bytes(data)
+        os.replace(tmp, mp3_path)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def winsound_play(path: Path):
     import winsound
     winsound.PlaySound(str(path), winsound.SND_FILENAME | winsound.SND_ASYNC)
@@ -137,8 +199,16 @@ def winsound_stop():
     winsound.PlaySound(None, winsound.SND_PURGE)
 
 
+def card_texts(card, lang: str = "") -> tuple:
+    """(palabra, frase) que se leen en voz alta para una tarjeta: de la palabra, en japonés su lectura en kana (evita errores
+    con los kanji); de la frase, el original. Ya limpios (cadena vacía si no hay)."""
+    lang = lang or getattr(card, "lang", "") or "en"
+    word = (getattr(card, "reading", "") or card.word) if lang == "ja" else card.word
+    return clean_text(word, lang), clean_text(getattr(card, "sentence", ""), lang)
+
+
 def prune_cache(folder: Path, max_mb: int = MAX_CACHE_MB):
-    """Borra los audios más viejos si la caché pasa de `max_mb`."""
+    """Borra los audios más viejos si la caché pasa de `max_mb` (los .wav; los .mp3 de exportación pesan casi nada)."""
     try:
         files = sorted((f for f in folder.glob("*.wav")), key=lambda f: f.stat().st_mtime)
         total = sum(f.stat().st_size for f in files)
@@ -157,10 +227,11 @@ class Speaker(QObject):
     loading_changed = pyqtSignal(bool)       # True mientras se genera un audio nuevo; False al terminar (suene o falle)
     _finished = pyqtSignal(str, str, object)    # clave, ruta, error (None = bien)
 
-    def __init__(self, cache_dir: Path = CACHE_DIR, synth=None, play=None, stop_play=None, parent=None):
+    def __init__(self, cache_dir: Path = CACHE_DIR, synth=None, play=None, stop_play=None, parent=None, synth_batch=None):
         super().__init__(parent)
         self.cache_dir = Path(cache_dir)
         windows = is_windows()
+        self._synth_batch = synth_batch or (windows_synth_batch if windows and synth is None else None)
         self._synth = synth or (windows_synth if windows else None)
         self._play = play or (winsound_play if windows else None)
         self._stop = stop_play or (winsound_stop if windows else None)
@@ -207,6 +278,69 @@ class Speaker(QObject):
         self.loading_changed.emit(True)
         threading.Thread(target=self._work, args=(key, text, lang, path), daemon=True).start()
         return True
+
+    # --- lotes (exportación a Anki) ---
+    def ensure(self, texts, lang: str, progress=None, chunk: int = 25):
+        """Deja en la caché el audio de todos los `texts` (sin repetidos; lo que ya está no se vuelve a generar) con pocas llamadas
+        a PowerShell. Pensado para un hilo de trabajo. Devuelve ({texto limpio: ruta .wav}, error o ""). `progress(hechos, total)`."""
+        cleaned = list(dict.fromkeys(t for t in (clean_text(x, lang) for x in texts) if t))
+        paths, err = {}, ""
+        todo = []
+        for t in cleaned:
+            p = self.path_for(t, lang)
+            if p.exists() and p.stat().st_size > 100:
+                paths[t] = p
+            else:
+                todo.append(t)
+        done = len(paths)
+        if progress:
+            progress(done, len(cleaned))
+        if todo and not self.available:
+            return paths, "La voz solo está disponible en Windows."
+        for i in range(0, len(todo), chunk):
+            part = todo[i:i + chunk]
+            jobs = [(t, self.path_for(t, lang)) for t in part]
+            try:
+                if self._synth_batch is not None:
+                    errors = self._synth_batch(jobs, lang)
+                else:
+                    errors = [self._synth(t, lang, p) for t, p in jobs]
+            except Exception as exc:  # noqa: BLE001
+                errors = [f"No se pudo generar la voz: {exc}"] * len(jobs)
+            for (t, p), e in zip(jobs, errors):
+                if e:
+                    err = err or (no_voice_message(lang) if e == "no_voice" else str(e))
+                elif p.exists():
+                    paths[t] = p
+            if err and all(e == "no_voice" for e in errors):
+                break                           # sin voz del idioma: no tiene sentido seguir
+            done += len(part)
+            if progress:
+                progress(done, len(cleaned))
+        return paths, err
+
+    def media_files(self, paths: dict, lang: str) -> tuple:
+        """Archivos para adjuntar a Anki a partir de {texto: .wav de la caché}. MP3 de 32 kbps si está `lameenc` (≈10 veces
+        más pequeños); si no, el .wav. Los nombres (`ocrt_<idioma>_<clave>.<ext>`) dependen del texto: reexportar los reutiliza.
+        Devuelve ({texto: ruta}, cuántos se convirtieron a MP3)."""
+        out, mp3_count = {}, 0
+        folder = self.cache_dir / "anki"
+        for text, wav in paths.items():
+            stem = f"ocrt_{lang}_{cache_key(text, lang)}"
+            mp3 = folder / f"{stem}.mp3"
+            if mp3.exists() and mp3.stat().st_size > 100:
+                out[text] = mp3
+                mp3_count += 1
+            elif wav_to_mp3(wav, mp3):
+                out[text] = mp3
+                mp3_count += 1
+            else:
+                dst = folder / f"{stem}.wav"
+                if not dst.exists():
+                    folder.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(wav, dst)
+                out[text] = dst
+        return out, mp3_count
 
     def stop(self):
         self._want = None
