@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import QApplication, QFrame, QTextBrowser, QTextEdit, QVBox
 import Translator.languages as languages
 from DB.dictionary import POS_LABEL
 from DB.levels_ja import chip as chip_for
+from UI.speech import SpeakButton
 
 _L = r"[^\W\d_]"   # una letra (Unicode)
 _WORD_RE = re.compile(rf"{_L}+(?:['’]{_L}+)*")           # palabra, con apóstrofos: don't
@@ -196,6 +197,17 @@ def _grammar_html(entry) -> str:
 def hidden_senses(result) -> int:
     """Significados que quedan escondidos mientras no se pulse «▸ Más significados»."""
     return sum(max(0, len(e.senses) - SENSE_LIMIT) for e in result.entries if e.kind != "grammar")
+
+
+def speak_text(result) -> str:
+    """Lo que lee la voz del popup: la palabra principal (en japonés, su lectura en kana si la hay, que evita errores con los kanji)."""
+    for entry in result.entries:
+        if entry.kind == "grammar":
+            continue
+        if entry.reading and _is_cjk(entry.lemma):
+            return entry.reading
+        return entry.lemma
+    return result.query or ""
 
 
 def copy_text(result) -> str:
@@ -427,6 +439,7 @@ class WordPopup(QFrame):
     entered = pyqtSignal()      # el mouse entró en la ventanita
     left = pyqtSignal()         # el mouse salió
     save_requested = pyqtSignal()      # «＋ Guardar» (la ventana de palabras guarda la que se está mostrando)
+    speak_requested = pyqtSignal(str)  # 🔊: leer la palabra en voz alta (texto a leer)
     _anchor = None              # (QRect global de la palabra, arriba?, al costado?) → el popup se pega a la palabra
 
     def __init__(self):
@@ -458,6 +471,16 @@ class WordPopup(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(1, 1, 1, 1)
         layout.addWidget(self._view)
+        # 🔊 arriba a la derecha: la zona que la cabecera deja libre
+        self._btn_speak = SpeakButton("Escuchar la palabra", (28, 28))
+        self._btn_speak.setParent(self)
+        self._btn_speak.clicked.connect(self._on_speak)
+        self._btn_speak.hide()
+
+    def _on_speak(self):
+        text = speak_text(self._result) if self._result is not None else ""
+        if text:
+            self.speak_requested.emit(text)
 
     def set_scale(self, percent: int):
         """Cambia el tamaño de la letra (y con él el ancho de la ventanita) y vuelve a dibujar lo que se muestra."""
@@ -582,6 +605,9 @@ class WordPopup(QFrame):
             if y + self.height() > area.bottom():
                 y = max(area.top(), area.bottom() - self.height())
         self.move(x, y)
+        self._btn_speak.setVisible(self._result is not None)
+        self._btn_speak.move(self.width() - self._btn_speak.width() - 10, 9)
+        self._btn_speak.raise_()
         self.show()
         self.raise_()
 

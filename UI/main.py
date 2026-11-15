@@ -21,6 +21,8 @@ from DB.phrase_log import PhraseLog
 from DB.glossary import GlossaryDictionary, UserGlossary
 from UI.glossary_window import GlossaryWindow
 from UI.main_ui import NavButton, StatusLabel, confirm, build_qss, set_prop
+from UI.speech import Speaker, SpeakButton
+from UI.live_ui_helpers import CaptureShield  
 from UI.log_view import LogPage
 from UI.overlay import SELECT, CaptureOverlay
 from UI.word_popup import HoverTextEdit, WordPopup
@@ -85,6 +87,9 @@ class MainWindow(QWidget):
         self.setWindowIcon(make_icon())
         self.resize(960, 680)
         self.setMinimumSize(840, 560)
+        # Ninguna ventana de la app sale en las capturas (Windows 10 2004+): el OCR no lee Configuración ni los avisos.
+        self.shield = CaptureShield()
+        QApplication.instance().installEventFilter(self.shield)
         self.overlay = None
         self.cards_window = None
         self.glossary_window = None
@@ -120,6 +125,10 @@ class MainWindow(QWidget):
                        "fr": GlossaryDictionary(self.dictionary_fr, self.glossary, "fr")}
         self.popup = WordPopup()
         self.popup.set_scale(get_number(self.settings, "popup_scale"))
+        self.speaker = Speaker()                 # voz de Windows: 🔊 del popup y del panel
+        self.speaker.failed.connect(self._on_speech_failed)
+        self.speaker.loading_changed.connect(lambda busy: None if busy else SpeakButton.clear_loading())
+        self.popup.speak_requested.connect(self.speak)
         self.words = WordService(self._dictionary_for(lang), self.store, self.popup, self, self.glossary)
         self.words.merge_getter = lambda: self._merge_used
         self.words.saved_changed.connect(self._cards_changed)
@@ -505,6 +514,15 @@ class MainWindow(QWidget):
 
     def on_overlay_word_clicked(self, word, compound, start):
         self.words.click(word, compound, self.overlay.text, start, self._merge_used)
+
+    def speak(self, text: str):
+        """Lee `text` en voz alta en el idioma del juego (palabra del popup o frase original del panel)."""
+        self.speaker.speak(text, languages.active().code)
+
+    def _on_speech_failed(self, text):
+        self._on_word_message(text)
+        if self.live.active:                    # con el vivo en marcha la ventana está minimizada: el aviso va al panel
+            self.live.panel.set_note(text, "warn")
 
     def _on_word_message(self, text):
         self.status.setText(text)

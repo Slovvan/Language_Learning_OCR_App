@@ -36,6 +36,7 @@ from UI.live import LiveController, signature, changed_fraction
 from UI.live_ui_helpers import exclude_from_capture
 from UI.overlay import DIM, MARK, PENDING, sample_colors, uniform_font
 from UI.word_popup import iter_words
+from UI.speech import SpeakButton
 
 READ_DELAY_MS = 150            # lo que se espera a que la región y el panel desaparezcan antes de capturar
 GAP = 8                        # separación entre la región y el panel
@@ -802,6 +803,7 @@ class _Wrap(QWidget):
 class _EntryCard(QFrame):
     """Una lectura del historial: el original (si se muestra) y la traducción. La última va destacada, en tarjeta."""
     deleted = pyqtSignal(int)
+    speak_requested = pyqtSignal(str)
 
     def __init__(self, entry, latest, show_original, deletable, px):
         super().__init__()
@@ -828,6 +830,10 @@ class _EntryCard(QFrame):
         self._parts.append(w)
         col.addWidget(w)
         lay.addLayout(col, 1)
+        # 🔊 justo a la izquierda de la ✕: lee la frase original en voz alta
+        self.btn_speak = SpeakButton("Escuchar la frase original", (24, 24))
+        self.btn_speak.clicked.connect(lambda: self.speak_requested.emit(self.entry["original"]))
+        lay.addWidget(self.btn_speak, 0, Qt.AlignTop)
         self.btn_del = None
         if deletable:
             self.btn_del = _IconButton("✕", "Borrar esta lectura del panel", (24, 24))
@@ -851,6 +857,7 @@ class _EntryCard(QFrame):
 class _EntryView(QScrollArea):
     """La lista de lecturas del panel (la más nueva abajo y destacada). Hace de «visor de texto»: toPlainText()."""
     entry_deleted = pyqtSignal(int)
+    speak_requested = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -900,6 +907,7 @@ class _EntryView(QScrollArea):
             latest = i == len(ordered) - 1
             card = _EntryCard(e, latest, show_original, deletable, px)
             card.deleted.connect(self.entry_deleted)
+            card.speak_requested.connect(self.speak_requested)
             self._cards.append(card)
             self._lay.insertWidget(self._lay.count() - 1, card)
             if latest and len(ordered) > 1:                   # más aire entre lo anterior y la lectura actual
@@ -1141,6 +1149,7 @@ class LivePanel(QFrame):
     merge_requested = pyqtSignal()               # la píldora «Líneas unidas»
     font_step = pyqtSignal(int)                  # A− / A+ del menú ⚙
     entry_deleted = pyqtSignal(int)              # ✕ de una entrada del historial
+    speak_requested = pyqtSignal(str)            # 🔊 de una entrada: texto original a leer
     size_changed = pyqtSignal(QSize)             # el usuario le cambió el tamaño
     key_pressed = pyqtSignal(int, int)
     entered = pyqtSignal()
@@ -1217,6 +1226,7 @@ class LivePanel(QFrame):
         self.view = _EntryView()
         self.view.setPlaceholderText("La traducción aparecerá aquí.")
         self.view.entry_deleted.connect(self.entry_deleted)
+        self.view.speak_requested.connect(self.speak_requested)
 
         # --- barra de botones
         self.btn_read = _KeyButton("Leer", "primary", glyph="▶", chip="R")
@@ -1666,6 +1676,7 @@ class LiveMode(QObject):
         self.panel.close_requested.connect(self.hide_panel)
         self.panel.clear_requested.connect(self.clear_history)
         self.panel.entry_deleted.connect(self.delete_entry)
+        self.panel.speak_requested.connect(self._speak)
         self.layer.set_over(self.over_region)
         self.panel.btn_auto.setChecked(self.auto)
         self.options.changed.connect(self._on_option)
@@ -1847,6 +1858,12 @@ class LiveMode(QObject):
         self.history.insert(0, self._cur)
         del self.history[self.history_max:]
         self._render_panel()
+
+    def _speak(self, text: str):
+        """🔊 de una frase del panel: la ventana principal la lee con la voz de Windows."""
+        speak = getattr(self.win, "speak", None)
+        if speak is not None:
+            speak(text)
 
     def delete_entry(self, entry_id: int):
         self.history = [e for e in self.history if e["id"] != entry_id]

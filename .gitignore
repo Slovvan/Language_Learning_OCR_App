@@ -5,3 +5,5 @@ Cards/data/
 __pycache__
 Tests
 ocr_jp_out
+UI/exports
+UI/data
