@@ -31,7 +31,7 @@ QWidget#shell QPushButton[variant="primary"]:disabled { background:#0d3f52; bord
 QWidget#shell QPushButton[variant="danger"] { color:#ffb4b4; }
 QWidget#shell QPushButton[variant="danger"]:disabled { color:#6b4c4c; }
 QWidget#shell QPushButton[on="true"] { background:#1d4a63; border-color:#6fd3ff; color:#ffffff; }
-QWidget#shell QPushButton#segbtn { border:none; border-radius:8px; background:transparent; padding:6px 14px; }
+QWidget#shell QPushButton#segbtn { border:none; border-radius:8px; background:transparent; padding:6px 9px; }
 QWidget#shell QPushButton#segbtn:hover { background:rgba(255,255,255,18); }
 QWidget#shell QPushButton#segbtn[on="true"] { background:#1d4a63; border:1px solid #6fd3ff; }
 QWidget#shell QPushButton#segbtn:disabled { color:#5b6677; }

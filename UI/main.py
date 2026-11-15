@@ -30,7 +30,7 @@ from UI.capture import bgr_to_qpixmap, grab_screen
 from UI.cards_window import CardsPage
 from UI.hotkeys import HotkeyManager, global_label
 from UI.live_mode import LiveMode
-from UI.app_settings import get_ocr_bar, hotkey_label, load_bindings, load_keys, get_number
+from UI.app_settings import get_ocr_bar, hotkey_label, load_bindings, load_keys, get_number, ja_rules_on
 from UI.hotkeys import HotkeyManager
 from UI.live_mode import LiveMode
 from UI.live_options import LiveOptions
@@ -105,6 +105,7 @@ class MainWindow(QWidget):
         if mode not in ("normal", "kana", "vertical"):
             mode = "normal"
         languages.set_active(lang)
+        languages.set_ja_rules(ja_rules_on(self.settings))
 
         # --- diccionario local, tarjetas, registro y ventanita emergente ---
         self.dictionary = Dictionary()
@@ -604,7 +605,7 @@ class MainWindow(QWidget):
         self._update_capture_ui()
 
     def open_settings(self, tab: int = None):
-        """Muestra la página «Configuración» (en la pestaña `tab`: 0 atajos, 1 captura congelada, 2 modo en vivo, 3 apariencia, 4 perfiles)."""
+        """Muestra la página «Configuración» (en la pestaña `tab`: 0 atajos, 1 captura congelada, 2 modo en vivo, 3 traducción, 4 apariencia, 5 perfiles)."""
         if self.settings_dialog is None:
             self.settings_dialog = SettingsDialog(self.settings, self.live_options, self)
             self.settings_dialog.changed.connect(self.apply_settings)
@@ -615,6 +616,15 @@ class MainWindow(QWidget):
         if tab is not None:
             self.settings_dialog.tabs.setCurrentIndex(tab)
         self._show_page(self.settings_dialog, self.btn_settings)
+        self._bring_to_front()
+
+    def _bring_to_front(self):
+        """Durante la captura la ventana principal está minimizada: al abrir algo desde el panel hay que traerla al frente."""
+        if self.isMinimized():
+            self.setWindowState((self.windowState() & ~Qt.WindowMinimized) | Qt.WindowActive)
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     # --- perfiles por juego ---
     def _reload_profiles(self):
@@ -706,6 +716,7 @@ class MainWindow(QWidget):
 
     def apply_settings(self):
         """Atajos, textos con su atajo y valores numéricos del modo en vivo."""
+        languages.set_ja_rules(ja_rules_on(self.settings))      # primero: si algo de abajo falla, las reglas ya quedaron aplicadas
         self.hotkey.set_bindings(load_bindings(self.settings))
         self.live.apply_settings()
         self.popup.set_scale(get_number(self.settings, "popup_scale"))

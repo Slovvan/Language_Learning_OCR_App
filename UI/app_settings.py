@@ -48,6 +48,11 @@ def get_number(settings, key: str) -> int:
     return max(lo, min(hi, value))
 
 
+def ja_rules_on(settings) -> bool:
+    """¿Están activas las reglas del japonés (punto final inteligente + glosario)? Sí de fábrica."""
+    return settings.value("ja_rules", True) in (True, "true", "1", 1)
+
+
 def get_ocr_bar(settings) -> str:
     """Cómo se muestra la barra de modos OCR: «hover» (viñeta), «always» o «hidden»."""
     value = str(settings.value("ocr_bar", "hover"))

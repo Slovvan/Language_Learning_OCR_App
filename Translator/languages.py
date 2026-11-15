@@ -99,19 +99,36 @@ def _zero() -> int:
     return 0
 
 
+# Interruptor de Configuración ▸ Traducción. Vive aquí (y no solo en ja_rules) para que apagar las reglas
+# funcione aunque ja_rules se importe desde dos rutas distintas (flat / subpaquete).
+_ja_rules_on = True
+
+
 def _ja_prepare(text: str) -> str:
-    from ja_rules import prepare
+    if not _ja_rules_on:
+        return text
+    from Translator.ja_rules import prepare
     return prepare(text)
 
 
 def _ja_fixed(text: str):
-    from ja_rules import fixed
+    from Translator.ja_rules import fixed
     return fixed(text)
 
 
+def set_ja_rules(on: bool):
+    """Activa o desactiva las reglas del japonés (Configuración ▸ Traducción)."""
+    global _ja_rules_on
+    _ja_rules_on = bool(on)
+    try:
+        import Translator.ja_rules as  ja_rules
+        ja_rules.set_enabled(on)
+    except Exception:       # noqa: BLE001  (el interruptor de arriba ya manda)
+        pass
+
+
 def _ja_rules_version():
-    from ja_rules import version
-    return version()
+    return 0 if _ja_rules_on else -1
 
 
 # Palabras japonesas: las segmenta SudachiPy (sin él, no hay palabras bajo el mouse).
@@ -142,8 +159,8 @@ class LanguagePack:
     postprocess: Callable        # retoque de cada frase traducida
     sentence_joiner: str = " "   # cómo se pegan las frases traducidas
     has_ocr_modes: bool = False  # ¿tiene modos de OCR (japonés: normal / solo kana)?
-    preprocess: Callable = _identity    # frase -> lo que se le da al modelo (punto final, glosario)
-    fixed: Callable = _no_fixed         # frase -> traducción fija del glosario, o None
+    preprocess: Callable = _identity    # frase -> lo que se le da al modelo (japonés: punto final y números en cifras)
+    fixed: Callable = _no_fixed         # frase -> traducción fija, o None (sin uso por ahora)
     rules_version: Callable = _zero     # cambia cuando cambian las reglas (vacía la caché)
     model_alts: tuple = ()              # repositorios alternativos si el principal no se puede descargar
     ocr_lang: str = ""                  # modelo de reconocimiento de RapidOCR ("" = el de serie; "latin")
@@ -162,7 +179,7 @@ PACKS = {
         model_dir=MODELS_DIR / "fugumt-ja-en-ct2-f32", warmup="こんにちは",
         split_line=_ja_split, join_lines=join_wrapped_lines_ja, sentence_at=sentence_at_ja,
         iter_words=_ja_iter_words, find_word=_ja_find_word, postprocess=fix_english,
-        has_ocr_modes=True),
+        has_ocr_modes=True, preprocess=_ja_prepare, fixed=_ja_fixed, rules_version=_ja_rules_version),
     "fr": LanguagePack(
         code="fr", label="Francés → Español", source_name="francés", target_name="español",
         model_repo="gaudi/opus-mt-fr-es-ctranslate2",

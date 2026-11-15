@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLay
 import Translator.languages as languages
 import UI.main_ui as main_ui
 import UI.profiles as profiles
-from UI.app_settings import (ACTIONS, KEY_SCOPES, NUMBERS, PANEL_MODES, default_bindings, default_keys, get_number, get_ocr_bar, load_bindings,
+from UI.app_settings import (ACTIONS, KEY_SCOPES, NUMBERS, PANEL_MODES, default_bindings, default_keys, get_number, get_ocr_bar, ja_rules_on, load_bindings,
                           load_keys, panel_mode)
 from UI.cards_window import ACCENT, MUTED, _Pill
 from UI.hotkeys import (MAX_KEYS, global_key_token, global_label, is_risky, normalize_global, overlay_key_from_event)
@@ -730,6 +730,7 @@ class SettingsPage(QWidget):
         self.tabs.addTab(self._hotkeys_tab(), "Atajos")
         self.tabs.addTab(self._frozen_tab(), "Captura congelada")
         self.tabs.addTab(self._live_tab(), "Modo en vivo")
+        self.tabs.addTab(self._translation_tab(), "Traducción")
         self.tabs.addTab(self._look_tab(), "Apariencia")
         self.tabs.addTab(self._profiles_tab(), "Perfiles")
         layout = QVBoxLayout(self)
@@ -1007,6 +1008,52 @@ class SettingsPage(QWidget):
     def reload_pause_key(self):
         """La tecla de pausa cambió desde fuera (al aplicar un perfil)."""
         self._pause_btn.set_value(str(self.settings.value("live_pause_key", "")))
+
+    # ------------------------------------------------------------------ Traducción
+    def _translation_tab(self):
+        main = _Card("Japonés → inglés")
+        switch = _Switch()
+        switch.setChecked(ja_rules_on(self.settings))
+        switch.setToolTip("Activa o desactiva el punto final inteligente y los números en cifras (japonés)")
+
+        def toggled(on):
+            self.settings.setValue("ja_rules", bool(on))
+            self._say("Reglas del japonés activadas: se aplican a la próxima lectura." if on
+                      else "Reglas del japonés desactivadas: el texto se traduce tal cual lo lee el OCR.")
+            self.changed.emit()
+        switch.toggled.connect(toggled)
+        self._ja_rules_switch = switch
+        main.add(_row("Reglas del japonés",
+                      "Ajustes propios que se aplican antes de traducir. Solo afectan al japonés; "
+                      "al apagarlas, el texto va al traductor tal cual.", switch))
+        main.intro("<b>Punto final inteligente.</b> Si lo capturado parece una oración sin puntuación "
+                   "(por ejemplo «最近よく眠れない»), se le añade «。» antes de traducirlo. Las etiquetas de menú, los "
+                   "nombres y las frases que ya llevan puntuación no se tocan.")
+        main.intro("<b>Números en cifras.</b> Los números compuestos en kanji que van seguidos de una unidad se escriben con "
+                   "cifras antes de traducir (千五百円 → 1,500円, 二・五パーセント → 2.5パーセント, 午後三時十五分 → "
+                   "午後3時15分). Palabras como 一緒, 一人, 十分 o 三日月 no se tocan. Solo cambia lo que recibe el traductor: "
+                   "el texto reconocido, el registro y el diccionario siguen con el original.")
+
+        better = _Card("Cuándo mejora")
+        better.intro("• <b>Frases en forma llana sin punto</b> (…る, …ている, …ない): el modelo a veces las devuelve como entrada "
+                     "de diccionario («Have little money in one's wallet») y con el punto salen como oración "
+                     "(«There is little money in my wallet.»).")
+        better.intro("• <b>Precios, horas, porcentajes y años</b> escritos con kanji: sin la regla el modelo se ha equivocado "
+                     "(«150 yen» por 千五百円, «15 p.m.», «two or five percent»).")
+
+        worse = _Card("Cuándo puede empeorar")
+        worse.intro("• <b>Frases corteses</b> (…ます, …です, …か): el modelo ya las traduce bien y el punto a veces cambia el "
+                    "sentido (ドアが閉まります → «The door is closed.»).")
+        worse.intro("• <b>Números:</b> esta regla aún no se ha medido con el modelo real. Si ves algo raro con precios o fechas, "
+                    "apaga la opción y compara.")
+        worse.intro("• Los errores propios del modelo (nombres, jerga) no los arreglan estas reglas: para eso está el "
+                    "diccionario de palabras.")
+
+        tip = _Card("Qué esperar")
+        tip.intro("En una prueba con 507 frases generales, el punto cambió el 37 %: unas 37 frases mejoraron, unas 14 empeoraron "
+                  "y el resto quedó equivalente (estimación manual). Si una traducción te parece rara, apaga la opción, "
+                  "vuelve a leer y compara.")
+        return self._page(_Columns([main, tip], [better, worse]))
 
     # ------------------------------------------------------------------ Apariencia
     def _look_tab(self):

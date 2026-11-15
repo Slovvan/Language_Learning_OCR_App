@@ -10,8 +10,9 @@ pantalla. En «compuesto» va la forma de diccionario cuando difiere de lo escri
 diccionario y las tarjetas reciben el lema sin cambiar ninguna otra interfaz.
 Si SudachiPy no está instalado, `available` es False y no se encuentra ninguna palabra.
 """
-import re
 import functools
+import re
+import threading
 import unicodedata
 from dataclasses import dataclass
 
@@ -23,7 +24,7 @@ except Exception:  # noqa: BLE001  (no instalado o sin diccionario)
 
 SKIP_POS = frozenset({"補助記号", "空白", "記号"})          # signos y espacios: no son palabras
 
-#Categoría de Sudachi -> prefijos de las categorías de JMdict que le corresponden. Sirve para
+# Categoría de Sudachi -> prefijos de las categorías de JMdict que le corresponden. Sirve para
 # elegir la entrada correcta entre homógrafos (は «partícula» y 歯 «diente» se leen igual).
 POS_TO_JMDICT = {
     "助詞": ("prt", "conj"),
@@ -80,6 +81,9 @@ class JaTokenizer:
         self._tk = None
         self._failed = False
         self._hints = {}                     # (superficie, lema) -> prefijos de categorías JMdict
+        # Sudachi no admite dos hilos a la vez en el mismo tokenizador («Tokenizer is already in use»).
+        # El hilo de la interfaz (hover) y el del traductor (reglas del japonés) lo usan los dos.
+        self._lock = threading.RLock()
 
     @property
     def available(self) -> bool:
@@ -103,6 +107,10 @@ class JaTokenizer:
             return ()
 
     def _tokenize(self, text: str) -> tuple:
+        with self._lock:
+            return self._tokenize_locked(text)
+
+    def _tokenize_locked(self, text: str) -> tuple:
         morphemes = list(self._get().tokenize(text, self._mode))
         pieces = self._kana_runs(text, morphemes)          # [(inicio, fin, superficie, lema, lectura, categoría, partes)]
         out = []
